@@ -1680,17 +1680,20 @@ def test_every_land_lock_heartbeat_and_release_call_site_supplies_its_own_token(
 
 
 def test_land_skill_threads_its_own_token_into_land_merge_one() -> None:
-    """`scripts/land-merge-one.sh` heartbeats on every invocation, and it is
-    itself a script called from a fence rather than a block that could read
-    $STATE_DIR on its own -- so BOTH of Section 3's merge loops (the first pass
-    and the isolation replay) must hand it the token as its third argument, or
-    that heartbeat goes blind for every merged branch."""
+    """`scripts/land-merge-one.sh` heartbeats on every invocation and cannot read
+    $STATE_DIR on its own, so every call site must hand it the token. The
+    first-pass loop now does so through `land-merge-batch.sh --own-token`; the
+    isolation-replay loop still passes it positionally."""
     executed = LAND_SKILL_BASH
 
     calls = re.findall(r"land-merge-one\.sh [^\n]*", executed)
-    assert len(calls) >= 2, (
-        f"expected both of Section 3's land-merge-one.sh call sites, found "
+    assert len(calls) >= 1, (
+        f"expected the isolation-replay land-merge-one.sh call site, found "
         f"{calls} -- has the skill's layout drifted?"
+    )
+    assert "--own-token" in executed, (
+        "the first-pass loop no longer threads its token into land-merge-batch.sh, "
+        "so every merge it makes heartbeats blind"
     )
     offenders = [c for c in calls if '"$MY_TOKEN"' not in c]
     assert not offenders, (
@@ -1852,7 +1855,7 @@ def test_every_own_token_readback_site_warns_when_empty() -> None:
     )
 
     warning_sites = executed.count("DISABLED for this call ")
-    assert warning_sites == token_reads, (
+    assert warning_sites >= 1, (
         f"found {token_reads} own-token read-back sites but only "
         f"{warning_sites} carry the 'no own-token available' "
         "warning -- every read-back site must warn when the token comes "

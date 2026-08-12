@@ -177,20 +177,20 @@ def _merge_loop_blocks() -> list[str]:
     not act as the independent check such a copy is usually justified by.
     """
     sites = [b for b in _skill_blocks() if "scripts/land-merge-one.sh" in b]
-    assert len(sites) == 2, (
-        f"expected exactly 2 fenced blocks calling land-merge-one.sh (Section 3's "
-        f"two merge loops), found {len(sites)} -- this test's assumption about "
-        "SKILL.md's structure has drifted; re-check by hand before adjusting the count"
+    assert len(sites) == 1, (
+        f"expected exactly 1 fenced block calling land-merge-one.sh (the "
+        f"isolation-replay loop), found {len(sites)} -- the first-pass loop is "
+        "scripts/land-merge-batch.sh, covered directly by test_land_merge_batch.py; "
+        "re-check by hand before adjusting the count"
     )
     return sites
 
 
 def test_section_3_merge_loops_both_persist_conflicts_to_the_state_dir() -> None:
-    """Section 3 has TWO merge loops -- the first pass, and the
-    isolation-replay loop entered on a red combined re-gate. Both call
-    scripts/land-merge-one.sh and both must persist a real conflict's paths
-    the same way, or the isolation-replay path silently regresses even when
-    the first-pass loop is fixed."""
+    """The isolation-replay loop is the one still fenced; the first-pass loop is
+    scripts/land-merge-batch.sh, whose own tests cover the same behaviour
+    directly. This pins that the fenced survivor persists a real conflict's
+    paths, since it cannot regress silently otherwise."""
     for i, site in enumerate(_merge_loop_blocks(), start=1):
         assert 'CONFLICTS_DIR="$STATE_DIR/conflicts"' in site, (
             f"merge loop #{i} no longer (re-)derives CONFLICTS_DIR"
@@ -258,88 +258,44 @@ def test_kick_back_block_refuses_loudly_on_missing_or_empty_conflicts() -> None:
     )
 
 
-def test_empty_accepted_falls_through_missing_accepted_still_aborts() -> None:
-    """proj-0jan: Section 3's first-pass merge loop must distinguish a MISSING
-    `$STATE_DIR/accepted` (3a's precompute never ran -- proj-sfnb's silent-
-    failure shape, still aborts loudly) from an EMPTY one (every branch already
-    bounced, escalated, held, or kicked back needs-rebase before this loop
-    started -- a legitimate outcome that must NOT abort, so the pass falls
-    through to Section 4's end-of-pass work instead of leaving the lock to age
-    out for no reason).
+def test_missing_vs_empty_accepted_stays_a_distinction_the_replay_loop_makes() -> None:
+    """A MISSING $STATE_DIR/accepted (3a's precompute never ran -- the silent-failure
+    shape) must abort loudly; an EMPTY one (every branch already bounced, escalated,
+    held, or kicked back) is legitimate and must not.
 
-    Before this fix, both cases hit the same `[ -n "$ACCEPTED" ] || exit 1`
-    guard and aborted identically -- this pins that the empty case no longer
-    does, while the missing case (a failed load) still does.
+    The FIRST-PASS half of this now lives in scripts/land-merge-batch.sh, which
+    enforces it directly and is covered by test_land_merge_batch.py
+    (`test_empty_accepted_set_is_a_clean_no_op`,
+    `test_missing_accepted_file_is_a_fault_not_an_empty_set`).
 
-    proj-dc4n retargeted the load itself onto scripts/land-state-load.sh
-    (default policy: missing fatal, empty OK) -- the missing-vs-empty
-    distinction this test pins now lives in that shared script rather than
-    inline `cat`/`[ -n ... ]` shell, but the invariant is unchanged: this
-    call site must not pass --require-nonempty (that's the OTHER policy,
-    used by the isolation-replay call site and the kick-back one)."""
+    What is still fenced is the isolation-replay loop, and it takes the OTHER
+    policy on purpose: --require-nonempty, because it only runs on a red combined
+    re-gate, where a nothing-merged pass skips the re-gate entirely. An empty set
+    should therefore be unreachable there -- which is exactly why it stays fatal
+    rather than being relaxed for symmetry with the first pass."""
     site = _merge_loop_blocks()[0]
-
-    # The missing case: the abort must hang off the LOAD's own exit status,
-    # via scripts/land-state-load.sh -- not off a separate emptiness test that
-    # a legitimately empty-but-present file would also trip. Pinned as the
-    # exact call + `|| exit 1` rather than "an `exit 1` somewhere near the
-    # load": the same fence carries other `exit 1`s (the rc=2 machine-fault
-    # arm), so a proximity check could stay green with this handler deleted.
-    assert 'ACCEPTED=$(scripts/land-state-load.sh "$STATE_DIR/accepted"' in site, (
-        "the first-pass merge loop no longer loads $STATE_DIR/accepted via "
-        "scripts/land-state-load.sh (proj-dc4n) -- proj-sfnb's silent-failure "
-        "guard has regressed"
+    assert 'scripts/land-state-load.sh "$STATE_DIR/accepted" --require-nonempty' in site, (
+        "the isolation-replay loop no longer loads $STATE_DIR/accepted via "
+        "scripts/land-state-load.sh --require-nonempty -- on a red re-gate with no "
+        "attributable branch, a loud stop is the only honest outcome"
     )
-    # EXACT, not a character-proximity check. proj-0jan's own technical review
-    # replaced a `< 200` proximity pin here with an exact one for precisely the
-    # reason it still holds: the same fence carries other `exit 1`s (the rc=2
-    # machine-fault arm), so a distance check stays green with the real handler
-    # deleted and an unrelated one nearby. Pin the whole call, continuation and
-    # handler included.
-    assert (
-        'ACCEPTED=$(scripts/land-state-load.sh "$STATE_DIR/accepted" -- \\\n'
-        '  "3a\'s precompute did not run. Landing nothing.") || exit 1'
-    ) in site, (
-        "the first-pass merge loop's land-state-load.sh call is no longer wired "
-        "to `|| exit 1` (or its context argument changed) -- a failed (missing) "
-        "load must abort the pass"
+    assert "|| exit 1" in site, (
+        "the replay loop's accepted load is no longer wired to `|| exit 1`"
     )
-
-    # This call site must use the DEFAULT policy (empty OK) -- never
-    # --require-nonempty, which is the isolation-replay/kick-back policy.
-    assert "--require-nonempty" not in site, (
-        "the first-pass merge loop's land-state-load.sh call passes "
-        "--require-nonempty -- an empty-but-present $STATE_DIR/accepted (every "
-        "branch bounced/escalated/held/needs-rebased) must fall through to "
-        "Section 4, not abort (proj-0jan)"
-    )
-
-    # The empty case must NOT independently abort: no `[ -n "$ACCEPTED" ] ||
-    # exit` (or equivalent) guard anywhere in this block. An empty-but-present
-    # accepted set is legitimate and must fall through to the for loop below
-    # (which correctly iterates zero times) rather than aborting the pass.
-    # Both spellings, so the guard cannot come back merely rephrased: the `-n
-    # ... || exit` form this fix removed, and its `-z ... && exit` inverse.
-    for emptiness_test in ('[ -n "$ACCEPTED" ]', '[ -z "$ACCEPTED" ]'):
-        assert emptiness_test not in site, (
-            f"the first-pass merge loop guards on `{emptiness_test}` -- an "
-            "empty-but-present $STATE_DIR/accepted (every branch bounced/"
-            "escalated/held/needs-rebased) must fall through to Section 4, "
-            "not abort (proj-0jan)"
-        )
-
 
 _REGATE = "nox -s tests"
 """The re-gate needle: the session that actually gates CONTENT.
 
-Not `nox -s lock_currency`, which matches the same two blocks today (measured)
-but whose exit 2 SKILL.md explicitly treats as NOT a red gate, and which is the
-chain's newest and most volatile member (proj-sys4). Pinning on it would go red
-when someone drops it for the reason the doc already contemplates, and stay
-green if `nox -s tests` were removed -- both directions wrong.
+Not `nox -s lock_currency`, which matches the same blocks today but whose exit 2
+the skill explicitly treats as NOT a red gate, and which is the chain's newest and
+most volatile member. Pinning on it would go red when someone drops it for the
+reason the doc already contemplates, and stay green if `nox -s tests` were removed
+-- both directions wrong.
 """
 
 _PUSH = "git push origin main"
+"""The push needle: Section 4's write of the default branch, which must not be
+hoisted above Section 3's re-gate."""
 
 
 def _regate_and_push_indices(blocks: list[str]) -> tuple[list[int], int]:

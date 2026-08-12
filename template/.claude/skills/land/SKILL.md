@@ -247,7 +247,10 @@ did not even parse — its outer loop was a comment, so the O(n²) driver got re
 untested, for an algorithm whose failure is silent. Run it once per pass:
 
 ```bash
-scripts/stacked-graph.sh --base-ref origin/main --report-unordered
+STATE_DIR="$(git rev-parse --git-dir)/land-state"   # re-derive — fresh Bash invocation
+mkdir -p "$STATE_DIR"
+scripts/stacked-graph.sh --base-ref origin/main --report-unordered \
+  | tee "$STATE_DIR/graph"
 ```
 
 Output is one tab-separated record per line:
@@ -273,8 +276,11 @@ plausible reimplementation gets wrong. **Do not re-derive this logic here.**
 A producer records a `builds_on` field as a breadcrumb, but that is intent only — the graph always
 comes from git.
 
-Run it **once** per pass and hold the result in memory — never persisted, never carried over from a
-prior pass, since a branch can be bounced, dropped, or landed in between.
+Run it **once** per pass, into `$STATE_DIR/graph`. A file, not a variable: no shell state survives
+between the blocks that need it, and `land-merge-batch.sh` reads it to decide which dependents a
+conflicting base takes with it. `$STATE_DIR` is wiped at the top of every pass (Section 1), so the
+graph can never be carried over from a prior one — a branch can be bounced, dropped, or landed in
+between.
 
 ---
 
@@ -534,55 +540,32 @@ its own primary-checkout identity internally, so this block needs no separate gu
 
 ```bash
 STATE_DIR="$(git rev-parse --git-dir)/land-state"   # re-derive — fresh Bash invocation; nothing
-MSG_DIR="$STATE_DIR/msg"                            # from 3a persists except the FILES it wrote
-CONFLICTS_DIR="$STATE_DIR/conflicts"
+                                                    # from 3a persists except the FILES it wrote
 MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
-[ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check is DISABLED for this call " >&2
-
-# Load 3a's accepted set, and REFUSE if the FILE never got written: that is 3a's precompute
-# not having run at all. An EMPTY file is a different, legitimate outcome and is NOT refused —
-# the loop iterates zero times, the re-gate after it is SKIPPED, and the pass falls through to
-# Section 4 exactly as a real merge would.
-ACCEPTED=$(scripts/land-state-load.sh "$STATE_DIR/accepted" -- \
-  "3a's precompute did not run. Landing nothing.") || exit 1
-
-for id in $ACCEPTED; do
-  # A command substitution inside an `if` condition is exempt from `set -e`, and `$?` in the
-  # `else` arm is the SCRIPT's real exit status. Do NOT rewrite as `if ! CMD; then rc=$?`:
-  # there `$?` is the *negation's* status, always 0 in that arm — so a machine-fault 2 would
-  # read as a clean merge and the pass would carry on as though the branch had landed.
-  if CONFLICTS=$(scripts/land-merge-one.sh "$id" "$MSG_DIR" "$MY_TOKEN"); then
-    rc=0
-  else
-    rc=$?
-  fi
-  case "$rc" in
-    0) echo "$id" >> "$STATE_DIR/landed" ;;   # merged cleanly — record it and keep going
-    2)
-      # MACHINE FAULT — never read as a conflict or a bounce. Stop the pass and surface the
-      # script's own stderr as a human decision.
-      exit 1
-      ;;
-    *)
-      # rc=1: real textual conflict with a branch already merged this pass — both passed 2b
-      # against origin but conflict with *each other*. Kick-back, NOT a land. It never reaches
-      # the `0)` arm, so it is never appended to landed and Section 4 cannot close or GC it.
-      printf '%s\n' "$CONFLICTS" > "$CONFLICTS_DIR/$id"
-      #
-      # 3a INVARIANT: this branch just LEFT the merge set — drop it AND its dependents (1a's
-      # full relation, transitively) and leave each the HELD note. WRITE THAT REDUCTION TO
-      # THE FILE, not just this shell's variable: the isolation-replay loop re-reads the FILE
-      # and would otherwise re-merge a branch this pass already kicked back, or merge a
-      # dependent whose base is no longer landing. For each dropped id:
-      #   grep -vxF "$dropped" "$STATE_DIR/accepted" > "$STATE_DIR/accepted.tmp" || true
-      #   mv "$STATE_DIR/accepted.tmp" "$STATE_DIR/accepted"
-      # (`|| true` because grep exits 1 when it filters out the last remaining line, and an
-      # empty accepted set is a legitimate outcome here.)
-      continue
-      ;;
-  esac
-done
+scripts/land-merge-batch.sh \
+  --accepted "$STATE_DIR/accepted" --landed "$STATE_DIR/landed" \
+  --msg-dir "$STATE_DIR/msg" --conflicts-dir "$STATE_DIR/conflicts" \
+  --graph "$STATE_DIR/graph" --own-token "$MY_TOKEN"
 ```
+
+It merges in 3a's order and prints one record per branch:
+
+| Record | Means | What I owe it |
+|---|---|---|
+| `LANDED <id>` | merged cleanly, appended to the landed file | nothing |
+| `CONFLICT <id>` | real textual conflict; paths in `conflicts/<id>` | a **needs-rebase kick-back** |
+| `HELD <id>` | its base left the merge set, so it did too | a **HELD note** — not conflicted, not rejected, just no foundation this pass |
+| `SKIPPED <id>` | already out of the set before its turn came | nothing; it carries a `HELD` record too |
+| `FAULT <id>` | machine fault | **stop the pass** — never a bounce, never a kick-back |
+
+**Exit 0** = everything merged. **Exit 1** = ran fine, some branch needs the follow-up above.
+**Exit 2** = machine fault: stop, land nothing further, surface the script's own stderr.
+
+It runs no gates and writes no tracker state — every `bd` write and every judgment stays mine. It
+also enforces 3a's invariant at the point that invariant actually bites: a conflicting branch takes
+its dependents out of `$STATE_DIR/accepted` **in the file**, via `scripts/drop-from-accepted.sh`,
+before the loop can reach them. `--graph` is what makes that transitive; omit it only on a pass with
+no stacks at all.
 
 Re-gate the combined result. A **docs-only** merge set has no code gate — skip it, and run the
 diagram validator only if a merged diff touched a diagram.
