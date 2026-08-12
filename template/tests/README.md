@@ -22,10 +22,50 @@ Several assert on **exact strings** in the skill markdown. That is deliberate: a
 gate you no longer have. When you legitimately change a skill, the corresponding test fails and you
 update it **deliberately** — that failure is the review prompt, not noise.
 
+**They pin the fenced bash, not the prose around it.** Only two modules read narrative text at all.
+So rewriting explanation is free; changing a command, a guard, or a state-load call is what trips a
+gate — which is the correct scope, not gratuitous brittleness.
+
 Three carry allowlists (`test_bd_list_limit_gate`'s prose-skip entries,
 `test_land_skill_guard_coverage`'s mutating-command exemptions). Each demands its entries still
 match something live, so an exemption that stops applying fails rather than silently exempting
 nothing.
+
+## Do I need all of them?
+
+The suite is 34 modules / 912 tests / ~35s. The test *count* is mostly parametrisation —
+`test_gh_write_guard` alone contributes ~174 cases, one per `gh` command form, in 1.4s. Count is not
+cost.
+
+Every module covers a script or skill the harness actually invokes; there is no dead weight to
+delete. What is genuinely optional is **whatever gates a skill you don't use**. The modules are
+independent, so deleting a file is safe:
+
+| Drop if you… | Modules | Lines |
+|---|---|---|
+| don't use `/release` | `test_release_bump`, `test_release_latest_tag` | 749 |
+| don't use epics | `test_epic_*` (3) | 649 |
+| don't run `/sweep` | `test_sweep_*` (6) | 1,432 |
+| never fan out `/code` | `test_code_concurrency_cap` | 231 |
+
+**Keep regardless**, whatever else you drop — these gate code that deletes worktrees, resets
+branches, force-removes refs, or spends the user's public identity, where a regression is
+unrecoverable rather than merely wrong:
+
+`test_land_lock`, `test_recycled_worktree_guard`, `test_isolation_guard`, `test_worktree_gc_classify`,
+`test_worktree_lock_stale`, `test_land_merge_one`, `test_merge_precheck`, `test_land_state_load`,
+`test_gate_lib`, `test_gh_write_guard`, `test_bd_deps_guard`, `test_validate_sha40*`,
+`test_blocks_dependents`.
+
+The **markdown scanners** (`test_skill_bash_state`, `test_bd_list_limit_gate`,
+`test_land_skill_guard_coverage`, `test_land_conflicts_state`) look like the obvious cut and are the
+worst one to make: they are the only thing checking the bash *inside* the skills, which no linter
+reaches, and they caught four real defects when this harness was first ported.
+
+The one module you can delete on the merits is **`test_no_hand_derived_skill_md_path`** (300 lines).
+It gates the test suite's own DRY-ness — that nobody re-derives a `SKILL.md` path outside
+`conftest.py`. That protects this suite as it grows, not the harness. Drop it if you don't plan to
+extend the suite.
 
 ## Shared helpers
 

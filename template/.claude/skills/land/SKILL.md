@@ -220,11 +220,7 @@ silently under-report and under-land a large backlog, every pass.
 If the queue is empty, release the lock and stop:
 
 ```bash
-MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
-[ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check is DISABLED for this call \
-  -- land-lock.sh REFUSES a blind release outright, so the lock stays held until the" \
-  "staleness window reclaims it" >&2
-scripts/land-lock.sh release "$MY_TOKEN"
+scripts/land-heartbeat.sh --release
 exit 0
 ```
 
@@ -233,10 +229,7 @@ to this stretch rather than 1a plus Section 1's networked calls combined. Failur
 stops the pass:
 
 ```bash
-MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
-[ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check is DISABLED for this call \
-  -- so this heartbeat simply does not fire (|| true below)" >&2
-scripts/land-lock.sh heartbeat "$MY_TOKEN" || true
+scripts/land-heartbeat.sh
 ```
 
 ---
@@ -249,77 +242,39 @@ Nothing about a stacked branch's *content* announces this; I detect it purely fr
 producer records a `builds_on` field as a breadcrumb, but that is redundancy and intent only — I
 never trust it as the mechanism.
 
-**Detection — shared history off the default branch, NOT tip-ancestry.** Two land branches cut
-independently have nothing but the default branch in common. So the relation to test is: **does any
-of their merge-bases lie off it?** If one does, the pair shares non-trunk history — and that shared
-commit is a base's tip *at the moment a dependent merged it*.
-
-**Shared history is necessary, not sufficient — the direction test decides.** An off-base merge-base
-means one of two things, and only the first is a stack:
-
-- **A stack** — one merged the other. The direction test finds the shared commit on the base's
-  first-parent spine but not the dependent's, and emits the edge.
-- **Siblings** — *two dependents that each merged the same third base* also share that base's
-  commits. Here the shared commit is off *both* spines, the direction test matches neither ordering,
-  and **no edge is emitted — which is the correct answer.** Each sibling is still correctly detected
-  as stacked on the *base* by its own pair.
+**This is `scripts/stacked-graph.sh`, not something I derive by hand.** It was inline bash here and
+did not even parse — its outer loop was a comment, so the O(n²) driver got re-improvised every pass,
+untested, for an algorithm whose failure is silent. Run it once per pass:
 
 ```bash
-git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/land/*'
-# for every ORDERED pair (X, Y) among the listed refs:
-# ENUMERATE ALL merge-bases — a pair can have more than one — and keep only the off-branch
-# ones. A base that later takes a needs-rebase pickup AFTER a dependent merged it acquires a
-# SECOND merge-base: the dependent's own cut point, which IS an ancestor of the default
-# branch. Single-result `git merge-base` picks one ARBITRARILY, and when it returns the
-# on-branch one the pair reads as unrelated and the stack goes undetected.
-OFF_BASE=""
-for mb in $(git merge-base --all "origin/land/<X>" "origin/land/<Y>"); do
-  git merge-base --is-ancestor "$mb" origin/main || OFF_BASE="$OFF_BASE $mb"
-done
-[ -z "$OFF_BASE" ] && continue   # every merge-base is on the default branch → unrelated
-# DIRECTION: the BASE is the one whose own first-parent spine contains an off-branch MB — the
-# dependent reached that commit through a merge (second parent), so it is not on its spine.
-for mb in $OFF_BASE; do
-  git rev-list --first-parent origin/main..origin/land/<X> | grep -qx "$mb" \
-    && ! git rev-list --first-parent origin/main..origin/land/<Y> | grep -qx "$mb" \
-    && echo "<Y> is stacked on <X>" && break
-done
+scripts/stacked-graph.sh --base-ref origin/main --report-unordered
 ```
 
-**Do NOT reduce this to `git merge-base --is-ancestor origin/land/<X> origin/land/<Y>`.** That tests
-the base's **tip**, and a base's tip *moves after a dependent merges it* — its reviewer pushes fixes,
-a pickup merges the default branch in. Both leave the dependent holding the base's *older* commits,
-so the base's current tip is no longer an ancestor and **the whole stack goes invisible**, silently.
-That is not a corner case; it is the *normal* flow, because a producer stacks on a base precisely
-while that base is still unlanded and therefore still moving. Immunity comes from `--all` plus the
-off-base filter, not from using a merge-base per se.
+Output is one tab-separated record per line:
 
-Build this **once**, as an in-memory map for the rest of the pass — never persisted, never trusted
-from a prior pass. Two shapes get used:
+- `EDGE  <dependent>  <base>  direct` — `<base>` is `<dependent>`'s **nearest** base. This is the one
+  2c hands `land-review` to diff against; a *transitive* base would make the diff carry the
+  intermediate branch's work as if it were this branch's. Section 3a orders the merge set off these.
+- `EDGE  <dependent>  <base>  transitive` — still a real dependency. `direct` + `transitive` together
+  are the **full relation**, which is what Bounce and the escalation paths need to ask "does deleting
+  this branch strand a live descendant?"
+- `UNORDERED <a> <b>` — related but with no derivable direction. Treat as **related**: do not delete
+  either branch without the descendant question being answered by a human.
 
-- **Full relation** (every base of Y, direct *or* transitive) — used by Bounce and the escalation
-  resolution paths to ask "does deleting X strand a live descendant?" A transitively-stacked branch
-  inherits X's content just as much as a direct one.
-- **Direct edges only** (X is Y's *nearest* base) — needed by 2c to pick the one base `land-review`
-  diffs a stacked branch against. Handing it a *transitive* base would make the diff carry the
-  intermediate branch's work as if it were this branch's. Section 3a uses the same view to order the
-  merge set.
+**Exit 2 is a machine fault, never "no stacks."** Stop the pass and surface it: a query that could not
+run must not be read as an empty graph, because that is precisely how a dependent gets merged before
+its base.
 
-**Two known gaps — documented, not claimed airtight.**
+The detection rule, the direction test, and the two known gaps (force-push; branched-from-base rather
+than merged-base) live in the script's own header and are pinned by `tests/test_stacked_graph.py`,
+which builds real repos for each case — including the moved-base-tip and two-merge-base shapes that a
+plausible reimplementation gets wrong. **Do not re-derive this logic here.**
 
-1. **Force-push.** The test survives an *append* but not a **rewrite**: force-pushing a base after a
-   dependent merged it removes the shared commit, and the pair reads as unrelated. Nothing here
-   force-pushes a land branch, so this is a future-proofing note — but **if one ever is
-   force-pushed, that pass's stacked graph is not trustworthy.**
-2. **Branched-from-base rather than merged-base.** The direction test assumes the dependent *merged*
-   the base. Branching directly off `land/<base>` puts the shared commit on *both* first-parent
-   spines, so no edge is emitted — detection still flags the pair, only the direction is lost. This
-   one is a **live** trigger; producers have deviated from the sanctioned flow.
+A producer records a `builds_on` field as a breadcrumb, but that is intent only — the graph always
+comes from git.
 
-Gap 2 is indistinguishable from a sibling pair by signature — both read as "related, no edge" — so
-warning on it would fire on every normal sibling. If a stack is suspected but no edge appears, check
-by hand whether the dependent's first-parent spine reaches the default branch or dead-ends in the
-base.
+Run it **once** per pass and hold the result in memory — never persisted, never carried over from a
+prior pass, since a branch can be bounced, dropped, or landed in between.
 
 ---
 
@@ -340,10 +295,7 @@ right before that ticket's review dispatch, so the gap the TTL must outlast is o
 sum across the queue.
 
 ```bash
-MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
-[ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check is DISABLED for this call \
-  -- so this iteration simply does not heartbeat (|| true below)" >&2
-scripts/land-lock.sh heartbeat "$MY_TOKEN" || true
+scripts/land-heartbeat.sh
 BD_JSON="$(bd show <id> --json)"
 LAND_HEAD="$(jq -r '.[0].metadata.land_head // empty' <<<"$BD_JSON")"
 # Shape-check BEFORE comparing to anything. Exit 1 = malformed/missing metadata; exit 2 = this
@@ -797,10 +749,7 @@ git status                 # MUST show up to date with origin
 # worktree-GC sweep below sit strictly BETWEEN this call and the pass-end release. That stretch
 # is the ordinary GREEN path, it grows with the number of tickets landed, and it runs during the
 # exact window the default branch is being written.
-MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
-[ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check is DISABLED for this call \
-  -- so this heartbeat simply does not fire (|| true below)" >&2
-scripts/land-lock.sh heartbeat "$MY_TOKEN" || true
+scripts/land-heartbeat.sh
 
 # The ids that actually stayed merged — read back from the file Section 3's loops appended to,
 # never restated by hand. On the Green path that is the accepted set minus any mid-loop
@@ -885,162 +834,18 @@ because those are ignored. Un-ignore one and every worktree reads dirty and the 
 reclaims *nothing*. Re-check this whenever you touch `.gitignore`.
 
 ```bash
-# FIELD ORDER IS LOAD-BEARING — DO NOT REORDER ($BR must stay LAST). Tab is IFS *whitespace*,
-# so `read` collapses adjacent tabs and does NOT preserve an empty MIDDLE field. `branch` is
-# the one field that can be empty (a DETACHED worktree — explicitly supported). With `branch`
-# in the middle, a detached worktree's line shifts every later field left: $BR swallows the
-# locked flag and $LOCKED reads EMPTY, so a LOCKED, LIVE agent's worktree sails past the gate
-# into the `--force` below — precisely the "rip a worktree out from under a running agent" harm
-# the gate exists to prevent. Keeping `branch` last makes its empty case a TRAILING delimiter,
-# which `read` discards harmlessly.
-RECLAIMED=0; RECLAIMED_DIR_ONLY=0; SKIP_LOCKED=0; SKIP_NOTMERGED=0; SKIP_DIRTY=0; FAILED=0
-STALE_LOCKS_FOUND=0
-# Minimum age of a NOT-MERGED builder worktree's last commit before its DIRECTORY (never its
-# branch ref) becomes eligible for the dir-only reclaim.
-MIN_AGE_SECONDS="${LAND_WORKTREE_DIRONLY_MIN_AGE_SECONDS:-21600}"
-while IFS=$'\t' read -r WT SHA LOCKED BR; do
-  if [ "$LOCKED" = "1" ]; then
-    # The lock recorded here is PER-SESSION, not per-agent — measured: several worktrees can
-    # share ONE lock-owner pid (the parent session process), so a DEAD session leaves every
-    # worktree it ever locked stuck at this check forever. worktree-lock-stale.sh proves the
-    # recorded pid is either not running at all, or has been REUSED by an unrelated later
-    # process (matching the recorded start-time token) — a plain PID-liveness probe cannot
-    # safely make this call. A lock it cannot positively prove dead is left alone (fail closed).
-    LOCK_REASON=$(git worktree list --porcelain | awk -v want="$WT" '
-      /^worktree / { path=$2; reason="" }
-      /^locked/    { reason=substr($0,8) }
-      /^$/         { if (path==want) { print reason; exit }; path="" }
-    ')
-    if scripts/worktree-lock-stale.sh "$LOCK_REASON"; then
-      STALE_LOCKS_FOUND=$((STALE_LOCKS_FOUND + 1))
-      # `git worktree remove` refuses a still-locked worktree even with --force — that flag
-      # overrides "has modifications," never "is locked". Proving the SESSION is dead is not
-      # the same as clearing git's own on-disk lock, so unlock it now and reflect that in
-      # $LOCKED so classify judges this candidate as unlocked.
-      git worktree unlock "$WT" 2>/dev/null || true
-      LOCKED=0
-    fi
-  fi
-  # The classifier is the single source of truth for the bucket. It takes no action; the case
-  # below performs the two destructive calls it only ever recommends — reading `git worktree
-  # remove`'s own exit status, not merely the fact that we attempted it, so the summary can
-  # never report "reclaimed N" when every remove FAILED.
-  BUCKET=$(scripts/worktree-gc-classify.sh "$WT" "$SHA" "$LOCKED" "$BR" "$MIN_AGE_SECONDS")
-  case "$BUCKET" in
-    keep-locked)    SKIP_LOCKED=$((SKIP_LOCKED + 1)) ;;
-    keep-notmerged) SKIP_NOTMERGED=$((SKIP_NOTMERGED + 1)) ;;
-    keep-dirty)     SKIP_DIRTY=$((SKIP_DIRTY + 1)) ;;
-    dir-only)
-      if git worktree remove --force "$WT"; then
-        RECLAIMED_DIR_ONLY=$((RECLAIMED_DIR_ONLY + 1))   # ref intentionally KEPT
-      else
-        FAILED=$((FAILED + 1))
-      fi
-      ;;
-    full-reclaim)
-      if git worktree remove --force "$WT"; then
-        [ -n "$BR" ] && git branch -D "$BR" 2>/dev/null || true
-        RECLAIMED=$((RECLAIMED + 1))
-      else
-        FAILED=$((FAILED + 1))
-      fi
-      ;;
-    *)
-      # Defensive net against a future classify bug printing something outside its documented
-      # bucket set. Fails CLOSED rather than silently falling through either reclaim arm.
-      echo "worktree GC: unexpected classify output '$BUCKET' for $WT — treating as failed" >&2
-      FAILED=$((FAILED + 1))
-      ;;
-  esac
-done < <(git worktree list --porcelain | awk '
-  /^worktree / { path=$2; head=""; branch=""; locked=0 }
-  /^HEAD / { head=$2 }
-  /^branch refs\/heads\// { branch=substr($0,19) }
-  /^locked/ { locked=1 }
-  /^$/ { if (path!="" && path ~ /\/\.claude\/worktrees\//) print path"\t"head"\t"locked"\t"branch; path="" }
-')
-git worktree prune          # drop any now-stale worktree admin entries
-# Always emit one line. "reclaimed 0 of 0" (nothing to do) reads differently from "reclaimed 0
-# of N" (everything was skipped — worth investigating), and the reason breakdown makes a
-# regression that silently zeroes out GC visible instead of indistinguishable from idle.
-TOTAL=$((RECLAIMED + RECLAIMED_DIR_ONLY + SKIP_LOCKED + SKIP_NOTMERGED + SKIP_DIRTY + FAILED))
-echo "worktree GC: reclaimed $((RECLAIMED + RECLAIMED_DIR_ONLY)) of $TOTAL candidate(s) (full=$RECLAIMED, dir-only=$RECLAIMED_DIR_ONLY, stale-locks-cleared=$STALE_LOCKS_FOUND; skipped: locked=$SKIP_LOCKED, not-merged=$SKIP_NOTMERGED, dirty=$SKIP_DIRTY; failed=$FAILED)"
+scripts/worktree-gc-sweep.sh --base-ref main
 ```
 
-**One loop covers BOTH branch-attached and DETACHED worktrees.** This replaced two separate sweeps —
-one keyed on branch *name*, one on HEAD *sha* — that tested the literally identical predicate ("this
-worktree's tip is already captured elsewhere") by two routes. The SHA form is strictly more general,
-so a new worktree-**branch**-naming convention cannot leak past this loop. That name-independence is
-**scoped to worktrees** and does NOT extend to the bare-ref backstops below, which must enumerate by
-name because `refs/heads/*` is shared with human branches.
+It prints one summary line per sweep plus one per bare-ref backstop. **"reclaimed 0 of 0" (nothing to
+do) reads differently from "reclaimed 0 of N" (everything was skipped)** — a regression that zeroes
+out GC must be visible here, not indistinguishable from idle. Exit 2 is a machine fault or a wrong
+checkout; it never means "nothing to reclaim".
 
-The one deliberate exception: the **dir-only** arm does key on the builder branch name, because what
-it tests — "no agent will ever want this exact checkout again, and its ref will survive to hold the
-commits" — has no metadata-free signal other than the branch shape.
+Then release the lock — the pass is fully done:
 
 ```bash
-# Second backstop: dangling local land/<id> refs with no worktree attached at all (so the sweep
-# above never considered them) and no remote counterpart left. "Remote gone" is sufficient
-# signal on its own: an in-flight ticket's origin/land/<id> always exists, so a missing remote
-# means this local ref is already stale. No extra locked/merged check is needed — `git branch
-# -D` itself refuses harmlessly if the branch is still checked out somewhere.
-#
-# List origin's land refs ONCE and only sweep if that listing SUCCEEDED: an unreachable origin
-# makes ls-remote exit non-zero, and reading that as "every remote land branch is gone" would
-# force-delete every local land ref on a transient network blip. An empty-but-successful
-# listing correctly means every local land ref is stale.
-#
-# STRIP THE WORKTREE SUFFIX BEFORE COMPARING. Reviewers and pickups check the branch out under
-# `land/<id>--<their-own-worktree-dir>`, which can NEVER byte-match origin's `land/<id>`.
-# Comparing raw would make the "remote still exists — keep" arm dead code for every ref this
-# sweep sees, silently demoting the backstop to "delete every land/* ref not currently checked
-# out" and force-deleting an in-flight ticket's ref — unpushed commits with it — the moment its
-# worktree goes away. `${BR%%--*}` maps the local name back to the remote one and leaves a bare
-# name untouched. Safe because an id never contains `--`.
-if REMOTE_LAND=$(git ls-remote --heads origin 'land/*' 2>/dev/null); then
-  REMOTE_LAND=$(printf '%s\n' "$REMOTE_LAND" | sed 's#^.*refs/heads/##')
-  # Report only deletions that ACTUALLY happened, reading `git branch -D`'s own exit status
-  # rather than announcing one "before the fact" behind `|| true`. OBSERVED: this backstop once
-  # printed "deleting stale local ref …" while the ref still existed afterward — the delete had
-  # been refused (still checked out in a locked worktree) and `|| true` swallowed it silently.
-  # Process substitution, not a pipe, so these counters survive past the loop.
-  B2_DELETED=0; B2_FAILED=0
-  while read -r BR; do
-    printf '%s\n' "$REMOTE_LAND" | grep -qxF "${BR%%--*}" && continue   # remote exists — keep
-    if git branch -D "$BR" 2>/dev/null; then
-      B2_DELETED=$((B2_DELETED + 1))
-    else
-      B2_FAILED=$((B2_FAILED + 1))
-    fi
-  done < <(git for-each-ref --format='%(refname:short)' 'refs/heads/land/*')
-  echo "bare-ref backstop2 (land/*): deleted $B2_DELETED stale local ref(s) (failed=$B2_FAILED)"
-fi
-
-# Third backstop: dangling local worktree-agent-* refs with no worktree attached — the same bug
-# as backstop 2 but the OTHER namespace, invisible to both nets above, accumulating without
-# bound (17 confirmed orphans on one machine). This namespace needs a DIFFERENT guard: a
-# builder branch is never pushed to origin, so "remote gone" is meaningless here and would
-# delete a LIVE, still-building branch. The correct guard is the same PREDICATE the worktree
-# sweep applies — captured elsewhere — reached by a branch-NAME lookup, because a bare ref has
-# no worktree and therefore no HEAD line to test; plus not currently checked out anywhere.
-MERGED=$(git branch --merged main --format='%(refname:short)')
-CHECKED_OUT=$(git worktree list --porcelain | awk '/^branch refs\/heads\//{print substr($0,19)}')
-B3_DELETED=0; B3_FAILED=0
-while read -r BR; do
-  printf '%s\n' "$CHECKED_OUT" | grep -qxF "$BR" && continue   # still checked out — keep
-  printf '%s\n' "$MERGED" | grep -qxF "$BR" || continue        # not merged — keep (in-flight)
-  if git branch -D "$BR" 2>/dev/null; then
-    B3_DELETED=$((B3_DELETED + 1))
-  else
-    B3_FAILED=$((B3_FAILED + 1))
-  fi
-done < <(git for-each-ref --format='%(refname:short)' 'refs/heads/worktree-agent-*')
-echo "bare-ref backstop3 (worktree-agent-*): deleted $B3_DELETED stale local ref(s) (failed=$B3_FAILED)"
-
-MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
-[ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check is DISABLED for this call \
-  -- land-lock.sh REFUSES a blind release, so the lock stays held until it ages out" >&2
-scripts/land-lock.sh release "$MY_TOKEN"   # the pass is fully done
+scripts/land-heartbeat.sh --release
 ```
 
 `bd close` unblocks dependents — that is *why* the lander closes and the producer never does: a

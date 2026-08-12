@@ -84,7 +84,7 @@ them as opaque gate commands behind a 0/1/2 exit contract; see
 Then run the harness's own gate tests — they ship green and need no project code:
 
 ```bash
-./venv/bin/pytest tests -q        # 893 passed
+./venv/bin/pytest tests -q        # 912 passed
 ```
 
 `harness-doctor.sh` checks prerequisites, guard scripts, agents and skills, hook wiring, the

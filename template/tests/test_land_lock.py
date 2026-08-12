@@ -1399,7 +1399,7 @@ def test_land_skill_acquires_and_releases_through_this_script() -> None:
     # Both explicit release sites: Section 1's empty-queue exit and the end of
     # Section 4. Losing one is not a correctness bug (the TTL still reclaims)
     # but it silently costs up to LAND_LOCK_STALE_SECONDS of blocked landing.
-    assert text.count("scripts/land-lock.sh release") >= 2, (
+    assert text.count("scripts/land-heartbeat.sh --release") >= 2, (
         "land/SKILL.md lost one of its two explicit `release` call sites -- "
         "that pass now waits out the whole staleness window instead"
     )
@@ -1531,7 +1531,7 @@ def test_land_skill_heartbeats_the_lock_once_per_ticket_in_section_2a() -> None:
     """
     text = LAND_SKILL_TEXT
 
-    assert "scripts/land-lock.sh heartbeat" in text, (
+    assert "scripts/land-heartbeat.sh" in text, (
         "land/SKILL.md never heartbeats the single-lander lock -- the TTL is "
         "back to measuring acquisition age, not idle time (proj-m87j)"
     )
@@ -1567,12 +1567,11 @@ def test_land_skill_heartbeats_at_both_new_boundary_call_sites() -> None:
     positions = [
         m.start()
         for m in re.finditer(
-            r'scripts/land-lock\.sh heartbeat "\$MY_TOKEN" \|\| true', text
+            r'^scripts/land-heartbeat\.sh$', text, re.MULTILINE
         )
     ]
     assert len(positions) == 3, (
-        f'expected exactly 3 in-skill \'scripts/land-lock.sh heartbeat "$MY_TOKEN" || '
-        f"true' call sites (Section 1 -> 1a boundary [proj-v4sv], Section 2a's "
+        f"expected exactly 3 in-skill 'scripts/land-heartbeat.sh' call sites (Section 1 -> 1a boundary [proj-v4sv], Section 2a's "
         f"per-ticket vet loop, Section 4's push-main -> release boundary "
         f"[proj-v4sv]), found {len(positions)}. A dropped site silently re-widens "
         "one of the two queue-size-growing gaps proj-v4sv closed."
@@ -1794,7 +1793,7 @@ def test_land_skill_never_reintroduces_an_inline_lock() -> None:
         "the acquire call is not inside an executable ```bash fence -- "
         "_fenced_bash() or the skill's layout has drifted"
     )
-    assert "land-lock.sh heartbeat" in executed, (
+    assert "land-heartbeat.sh" in executed, (
         "the heartbeat call (Section 2a) is not inside an executable ```bash "
         "fence -- test_land_skill_heartbeats_the_lock_once_per_ticket_in_"
         "section_2a found it in the file's prose but not where it is actually "
@@ -1841,8 +1840,8 @@ def test_every_own_token_readback_site_warns_when_empty() -> None:
     executed = LAND_SKILL_BASH
 
     token_reads = executed.count('cat "$(git rev-parse --git-dir)/land-lock-token"')
-    assert token_reads == 7, (
-        f"expected exactly 7 reads of $(git rev-parse --git-dir)/land-lock-token"
+    assert token_reads == 2, (
+        f"expected exactly 2 reads of $(git rev-parse --git-dir)/land-lock-token"
         f" in land/SKILL.md (Section 1's release, the gap (a) boundary heartbeat "
         f"before Section 1a [proj-v4sv], Section 2a's per-ticket heartbeat, "
         f"Section 3's two merge loops, the gap (c) boundary heartbeat at the top "

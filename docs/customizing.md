@@ -176,7 +176,10 @@ them only after reading [architecture.md](architecture.md).
   ("an earlier fix", "OBSERVED"). The narration is accurate about the failure mode and useful when
   you're deciding whether you may change a predicate; it just no longer cites ticket ids. The
   executable code is unmodified apart from the branch-name and project-name substitutions.
-- **The gate tests ship and pass, but they are pins.** `tests/` carries 36 modules (893 tests) that
+- **You can drop the gate tests that cover skills you don't use** — the modules are independent and
+  `tests/README.md` tiers them. What you should not drop are the markdown scanners: they are the only
+  check on the bash *inside* the skills, which no linter reaches.
+- **The gate tests ship and pass, but they are pins.** `tests/` carries 34 test modules (912 tests) that
   enforce the mechanisms above. Several assert on **exact strings** in the skill markdown, so a
   legitimate edit to a skill will fail one — deliberately: that failure is the review prompt. See
   `tests/README.md`.
