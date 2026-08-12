@@ -41,31 +41,23 @@ correctly, **in order, build then review**, and relay what came back.
 > whose agent from invocation A is still live and dispatch a second agent at it. Need more
 > parallelism? Pass more IDs to the **same** invocation.
 
-> **Concurrency cap — one shared budget for every dispatch below.** Too many concurrent agents will
-> exhaust the machine: each agent's gate runs the full test suite, often with per-core parallel
-> workers, and several of those at once can take the host down. **Before step 0**, compute the cap
-> once and hold it for the invocation:
+> **Concurrency cap.** Each agent's gate runs the full test suite; enough of them at once takes the
+> host down. **Before step 0**, compute the cap once and hold it for the invocation:
 >
 > ```bash
 > REPO_ROOT="$(git rev-parse --show-toplevel)"
 > CODE_MAX_CONCURRENT_AGENTS="$("$REPO_ROOT/scripts/code-concurrency-cap.sh")" || CODE_MAX_CONCURRENT_AGENTS=4
 > ```
 >
-> The `|| …=4` fallback works by **exit-status propagation, not emptiness**: a `VAR="$(cmd)"`
-> assignment inherits its command substitution's exit status, so a missing or unexecutable script
-> trips the `||` whatever stdout held. **Never proceed on an empty or non-numeric cap** — say so
-> first.
+> The `||` fires on **exit status, not emptiness** — a `VAR="$(cmd)"` assignment inherits its
+> substitution's status, so a missing script trips it whatever stdout held. **Never proceed on an
+> empty or non-numeric cap**; say so instead. `CODE_MAX_CONCURRENT_AGENTS` in the environment wins
+> outright when set. The script is the source of truth for the derivation.
 >
-> - **`CODE_MAX_CONCURRENT_AGENTS`** (env var) wins outright when set — no clamping, no derivation. A
->   static per-machine number the user sets beats a heuristic that guesses wrong. Set it durably via
->   `.claude/settings.local.json`'s `"env"` block (gitignored, machine-local).
-> - **Unset** → derived from available memory divided by a per-agent gate budget that scales with the
->   test suite's worker count, then capped at `nproc/2` and floored at 1. See the script; it is the
->   executable source of truth and wins over any prose.
-> - **One shared budget across every dispatch source in this invocation** — step 0's rebase pickups,
->   step 1's stranded-review pickups, Phase 1 builders, and Phase 2 reviewers all draw from the same
->   count. Builders and reviewers are not separate pools. Track in-flight agents; **queue** a dispatch
->   that would exceed the cap and release it as a slot frees.
+> **It is ONE budget across every dispatch in this invocation** — step 0's pickups, step 1's
+> re-entries, Phase 1 builders, Phase 2 reviewers. Builders and reviewers are not separate pools.
+> Track in-flight agents; **queue** a dispatch that would exceed the cap and release it as a slot
+> frees.
 
 ### 0. Sweep for `needs-rebase` kick-backs — every invocation, regardless of argument
 
@@ -358,19 +350,6 @@ and head SHA, and that it reached `ready-for-land`.
 
 ## Notes
 
-- This skill is the **only** sanctioned way to spin up coding work from the main session. Fan out
-  within one invocation rather than starting a second concurrent `/code`.
-- **Two phases, in order: build then review.** The review must run on the *built* branch, so always
-  dispatch the reviewer *after* its builder returns — never in parallel with its own build. Don't
-  dispatch a reviewer for a ticket that escalated at build time.
-- **Step 0's rebase pickup is a third mode, not a phase.** It reuses the `coding` subagent's pickup
-  cycle but skips Phase 2 entirely. Self-healing covers a clean merge and a **mechanical** conflict;
-  a genuine disagreement still escalates to a human. That's a deliberate judgment boundary, not a
-  tooling gap.
-- **Step 1's sweep is Phase 2 pulled forward, not a fourth mode.** Same subagent, same dispatch; only
-  the ticket's provenance differs.
-- Worktree isolation has been observed handing a dispatched agent a **recycled** worktree still on a
-  previous ticket's branch. The mitigation is defensive and lives in the agents, not here — both run
-  `scripts/recycled-worktree-guard.sh` before doing any work.
-- If an argument is genuinely ambiguous (looks like an ID but isn't one that exists, or a fan-out set
-  with hidden dependencies), ask before dispatching rather than guessing.
+- This skill is the **only** sanctioned way to spin up coding work from the main session.
+- If an argument is genuinely ambiguous — looks like an ID but isn't one that exists, or a fan-out
+  set with hidden dependencies — ask before dispatching rather than guessing.

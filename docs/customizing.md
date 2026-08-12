@@ -56,17 +56,9 @@ stubs, so they neither read nor constrain your real prefix. (Proof: the suite pa
 
 ### Quality gates
 
-The harness treats gates as opaque commands with a **0 / 1 / 2 exit contract**:
-
-| Exit | Meaning | Agent response |
-|---|---|---|
-| 0 | ran, passed | continue |
-| 1 | ran, found a real problem | fix, re-run |
-| 2 | **could not run** (missing tool, no network, broken environment) | **escalate** — never skip |
-
-Exit 2 is the part people drop, and it is the part that matters: without it, an agent facing a
-tooling failure invents a plausible machine-level story and proceeds as though the gate had passed.
-Any gate you add must distinguish "found a problem" from "could not answer."
+Gates are opaque commands behind the **0 / 1 / 2 exit contract**
+([architecture.md](architecture.md#gate-exit-codes-0--1--2)). Exit 2 is the part people drop and the
+part that matters: **any gate you add must distinguish "found a problem" from "could not answer."**
 
 The three invocations to substitute, all appearing in `.claude/agents/coding.md`,
 `.claude/agents/code-reviewer.md`, and `.claude/skills/land/SKILL.md`:
@@ -157,6 +149,10 @@ them only after reading [architecture.md](architecture.md).
   amend-and-re-gate re-entry.
 - **`--limit 0` on every tracker list query.** The tracker emits no truncation signal — a capped read
   is indistinguishable from a short queue.
+- **`/land` reporting incidental discoveries rather than filing them.** "Search the tracker before
+  filing" looks like the obvious improvement and was rejected: it codifies the improvised filing path
+  instead of removing it, and it binds only an agent already consulting the filing guidance — which
+  an agent improvising a filing path, by construction, is not.
 - **The no-cross-block-shell-state rule.** Each fenced block in a skill is a separate tool
   invocation. This rule was learned by shipping the bug.
 

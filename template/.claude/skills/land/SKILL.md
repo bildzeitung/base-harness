@@ -47,31 +47,24 @@ A loop that iterates zero times and exits 0 is indistinguishable from a clean pa
 
 ## 0. Single-lander lock — acquire FIRST, every tick
 
-Being the **single** lander is what serializes landing, guaranteed by **(a)** a local "skip if
-already running" lockfile and **(b)** the convention that the loop runs on **one machine**.
+Serialization comes from **(a)** a local "skip if already running" lockfile and **(b)** the
+convention that the loop runs on **one machine**.
 
-**This lock is real state that must span the whole pass, across every fenced block** — exactly the
-shape the governing rule warns cannot survive a `trap` or a `$$`. Managed inline it was **inert**:
-the release fired the instant its own block's shell exited, and the stale-lock reclaim judged
-liveness from a PID that is *always* already dead by the time a later block reads it. Both halves
-live in `scripts/land-lock.sh`, which replaces them with a wall-clock staleness token.
+The lock spans the whole pass, across every fenced block — the shape the governing rule says cannot
+survive a `trap` or a `$$`. It therefore lives in `scripts/land-lock.sh`, keyed on a wall-clock
+staleness token rather than a PID (which is always already dead by the time a later block reads it).
 
-**The token is a heartbeat, not a one-shot stamp.** Section 2a re-stamps it once per ticket, and
-`scripts/land-merge-one.sh` re-stamps on every call, so a long pass never has its *own* lock
-reclaimed mid-merge. Two boundary call sites cover the stretches that *grow* with queue size (before
-Section 1a, and at the top of Section 4). The single combined re-gate still runs unheartbeated —
-that one does not grow with queue size.
+**The token is a heartbeat, not a one-shot stamp** — re-stamped once per ticket in Section 2a, on
+every `land-merge-one.sh` call, and at the two boundaries whose cost grows with queue size (before
+Section 1a, top of Section 4). The combined re-gate runs unheartbeated; it does not grow with queue
+size.
 
-**The lock is released explicitly at exactly two sites:** the empty-queue exit in Section 1 and the
-end of a full pass in Section 4. **Every other way a pass stops leaves the lock held until it ages
-out** (default 1800s). That is correct: a TTL that asks nothing of any exit site cannot be silently
-broken by a future "stop the pass" that forgets to release. Adding a release per exit site was
-deliberately rejected on that basis.
+**Released at exactly two sites:** Section 1's empty-queue exit and the end of a full pass in
+Section 4. **Every other stop leaves the lock held until it ages out** (default 1800s). That is
+deliberate: a TTL that asks nothing of any exit site cannot be broken by a future "stop the pass"
+that forgets to release. Do not add per-exit releases.
 
-**A pass in which every branch was bounced, escalated, held, or kicked back is NOT one of those exit
-sites.** Section 3's empty-accepted guard distinguishes **missing** (3a never ran — a real silent
-failure, aborted loudly) from **empty** (every branch legitimately left the set). The empty case
-flows straight through to Section 4, which already handles an empty landed set by construction.
+An all-bounced / all-kicked-back pass is **not** a stop — it flows through to Section 4 normally.
 
 ```bash
 STATE_DIR="$(git rev-parse --git-dir)/land-state"    # re-derive — fresh Bash invocation
@@ -153,19 +146,17 @@ printf '%s\n' "$ACQUIRE_OUT" \
 
 ## 1. Setup the pass — tracker-authoritative, fetch origin
 
-**Refuse to start unless I am actually in the primary checkout — asserted once, up front, as a
-precondition of the whole block rather than as a `-C` bolted onto individual commands.**
-`--show-toplevel` resolves relative to **cwd**, so `-C "$(git rev-parse --show-toplevel)"` is a no-op
-wherever it matters: in the primary checkout it restates the cwd you're already in, and in a worktree
-it resolves to *that worktree's* root. It reads as a safety guard and is not one.
-`--git-common-dir` is what actually distinguishes the two: every worktree shares one common `.git`
-directory, and only the **primary checkout's toplevel** is that directory's parent.
+**Refuse to start unless I am actually in the primary checkout.** Do not reach for
+`-C "$(git rev-parse --show-toplevel)"` instead: `--show-toplevel` resolves against **cwd**, so it
+restates the cwd you already have and, from a worktree, resolves to *that worktree's* root. It reads
+as a guard and is not one. `assert-main-checkout.sh` uses `--git-common-dir`, which does
+distinguish them: every worktree shares one common `.git`, and only the primary checkout's toplevel
+is its parent.
 
 **The guard is the FIRST LINE OF THE SAME fenced block as the commands it protects — never its own
-block, and this is the whole point.** Every fenced block is a separate Bash invocation, so a guard in
-its own block can only `exit` *that* shell — whether the destructive block then runs is left to my
-judgment reading prose. Sharing one block makes `||` do the work instead: `git reset --hard` is
-**unreachable** unless the assertion passed, enforced by the shell, with no agent decision in between.
+block.** Each block is a separate Bash invocation, so a guard in its own block can only `exit` *that*
+shell, leaving "does the destructive block run?" to my judgment. Sharing a block makes `||` enforce
+it: `git reset --hard` is unreachable unless the assertion passed.
 
 ```bash
 scripts/assert-main-checkout.sh || exit 1   # STOP — everything below assumes this passed
@@ -192,39 +183,29 @@ at pass start local should already be bit-for-bit `origin`. The only legitimate 
 an ungraceful crash. Those merges were never gated green on their own and never reached origin:
 **residue, not work.**
 
-**This line is the *only* place residue is cleared — every exit site below points here rather than
-restoring the branch itself.** That generality costs timing (residue survives until the *next* pass
-starts) but it buys self-healing from a bare crash or kill, which a per-exit-site restore cannot: a
-killed pass runs no exit-site code at all.
+**This is the *only* place residue is cleared** — every exit site below points here rather than
+restoring the branch itself. Residue therefore survives until the *next* pass starts, which buys
+self-healing from a bare crash: a killed pass runs no exit-site code at all.
 
-Two things the reset does **not** do that `pull --rebase` did, both deliberate: it does not replay
-local-only commits forward, and it does **not** refuse on a dirty tree or index. The second cuts both
-ways — a staged passive tracker export aborts `pull --rebase` outright while `reset --hard` absorbs
-it, but the same permissiveness lets the reset destroy genuinely uncommitted work, which no reflog
-recovers. Hence the `git log` line above, printed while the residue still exists. Discarded *commits*
-stay in `git reflog`; discarded *uncommitted* work does not. **Do not "simplify" this back to
-`pull --rebase`.**
+The reset does **not** refuse on a dirty tree, unlike `pull --rebase` — which is why it absorbs a
+staged tracker export, and also why it can destroy genuinely uncommitted work. Discarded *commits*
+stay in `git reflog`; discarded *uncommitted* work does not. Hence the `git log` above, printed
+while the residue still exists. **Do not "simplify" this back to `pull --rebase`.**
 
-**The `checkout -f` is load-bearing, and not for cleanup** — `reset --hard` clears an unmerged index
-by itself. It is load-bearing because `reset --hard` moves whatever ref HEAD is on: were HEAD ever
-detached, it would leave the branch untouched. `-f` is there purely so the checkout cannot *fail* — a
-pass killed mid-merge leaves an unmerged index, and a bare `checkout` then fails rc=1 *even when
-already on the right branch*, stopping the pass at its second command in exactly the crash case this
-reset exists to heal.
+**`checkout -f` is there so the checkout cannot *fail*, not to clean anything.** A pass killed
+mid-merge leaves an unmerged index, and a bare `checkout` then fails rc=1 *even when already on the
+right branch* — stopping the pass at its second command in exactly the crash case this reset heals.
+The checkout is needed at all because `reset --hard` moves whatever ref HEAD is on: detached, it
+would leave the branch untouched.
 
-**The same block wipes `$STATE_DIR`.** It is per-pass scratch the reset cannot clear, and a leftover
-from a crashed prior pass is the same *residue* category as a leftover merge commit. The line only
-ever **removes** — each writer still `mkdir -p`s the subdirectory it needs — so Section 1 never has
-to enumerate a subdirectory a later section invents. Its position *inside* the block is load-bearing:
-no block here runs under `set -e`, so the **last** command's status is the only machine-readable
-signal the block gives, and `rm -rf` reports success even on a path that does not exist. Keep
-`git reset --hard` last.
+**Keep `git reset --hard` as the block's LAST command.** No block here runs under `set -e`, so the
+last command's status is the only machine-readable signal the block gives — and `rm -rf` reports
+success even on a path that does not exist.
 
-**This reset is load-bearing for a downstream consumer.** `scripts/recycled-worktree-guard.sh` resets
-recycled agent worktrees onto `origin/main`, on the premise that `/land` only ever advances that ref
-with already-gated content — a property of this skill's *step order*, not of any lock. Every launch
-worktree branches from `origin/main` too, so a reorder's blast radius is every fresh agent worktree.
-Section 4's push must stay after Section 3's re-gate.
+**Section 4's push must stay after Section 3's re-gate.** `recycled-worktree-guard.sh` resets agent
+worktrees onto `origin/main` on the premise that `/land` only ever advances that ref with
+already-gated content — a property of this step order, not of any lock. Every launch worktree
+branches from it, so a reorder's blast radius is every fresh agent worktree.
 
 Then read the queue — every ticket carrying **`ready-for-land`** (it stays `in_progress`; the label,
 not the status, is the queue):
@@ -324,24 +305,21 @@ from a prior pass. Two shapes get used:
   intermediate branch's work as if it were this branch's. Section 3a uses the same view to order the
   merge set.
 
-**Known gaps — documented, not claimed airtight.**
+**Two known gaps — documented, not claimed airtight.**
 
-1. **Force-push.** The merge-base test survives any *append* but not a **rewrite**. If a base's
-   history were force-pushed after a dependent merged it, the shared commit is gone and the pair
-   reads as unrelated. Nothing in this architecture force-pushes a land branch, so this is a defense
-   against a future change, not a live trigger. **If a `land/<id>` branch is ever force-pushed, the
-   stacked graph for that pass is not trustworthy.**
-2. **Branched-from-base, not merged-base.** The direction test assumes the dependent *merged* the
-   base. A producer that instead **branches directly off `land/<base>`** puts the shared commit on
-   *both* first-parent spines, so the direction test matches neither half and emits no edge.
-   Detection still flags the pair as related; only the *direction* is lost. This is a **live**
-   trigger — producers have deviated from the sanctioned flow.
+1. **Force-push.** The test survives an *append* but not a **rewrite**: force-pushing a base after a
+   dependent merged it removes the shared commit, and the pair reads as unrelated. Nothing here
+   force-pushes a land branch, so this is a future-proofing note — but **if one ever is
+   force-pushed, that pass's stacked graph is not trustworthy.**
+2. **Branched-from-base rather than merged-base.** The direction test assumes the dependent *merged*
+   the base. Branching directly off `land/<base>` puts the shared commit on *both* first-parent
+   spines, so no edge is emitted — detection still flags the pair, only the direction is lost. This
+   one is a **live** trigger; producers have deviated from the sanctioned flow.
 
-Note gap 2 is not distinguishable from a sibling pair by signature alone — both show up as "related
-but no edge." That is why it stays a documented gap rather than something to warn on: a warning keyed
-on that signature would fire on every perfectly normal sibling pair. If a stack is suspected but no
-edge appears, check by hand whether the dependent's first-parent spine reaches the default branch at
-all, or dead-ends in the base.
+Gap 2 is indistinguishable from a sibling pair by signature — both read as "related, no edge" — so
+warning on it would fire on every normal sibling. If a stack is suspected but no edge appears, check
+by hand whether the dependent's first-parent spine reaches the default branch or dead-ends in the
+base.
 
 ---
 
@@ -396,20 +374,18 @@ explicitly "malformed `land_head` metadata, not drift" plus what the human owes:
 mechanically (`git rev-parse` / `git ls-remote`, never retyped), re-write the field, and re-enter at
 `ready-for-land`.
 
-**Why escalate rather than bounce or repair.** A corrupt hand-off record means **no drift evidence
-exists at all** — whether the branch is nonetheless the reviewed one is a *human* judgement. Bouncing
-would supersede the ticket and **delete** the branch whose field the remedy asks a human to re-write.
-Repairing in-pass is worse: `land_head` records **what the reviewer saw**, so re-deriving it yields
-the *current* tip and the comparison becomes tip == tip — vacuously true. That doesn't fix the drift
-check, it deletes it while leaving it green.
+**Why escalate rather than bounce or repair.** A corrupt hand-off record means no drift evidence
+exists at all, and whether the branch is nonetheless the reviewed one is a human judgement. Bouncing
+would delete the very branch whose field the remedy asks a human to re-write. Repairing in-pass is
+worse: `land_head` records **what the reviewer saw**, so re-deriving it yields the *current* tip and
+the comparison becomes tip == tip — deleting the drift check while leaving it green.
 
 ### 2b. Cheap conflict precheck — does it still merge?
 
-A branch that forked long ago is **not** stale-in-a-way-that-matters as long as it still merges
-clean: `--no-ff` integrates non-linear history fine, and Section 3's combined re-gate re-runs the
-tests on the *merged* result. What *does* disqualify a branch is a **textual conflict** — and
-discovering that only at merge time means I've already paid for a full semantic review on contents
-the rebase will change.
+A branch that forked long ago is fine as long as it still merges clean: `--no-ff` handles non-linear
+history, and Section 3 re-gates the *merged* result. Only a **textual conflict** disqualifies it —
+and discovering that at merge time means already having paid for a semantic review of contents the
+rebase will change.
 
 ```bash
 # $STATE_DIR is wiped once per pass in Section 1; re-derived here, fresh invocation.
@@ -486,24 +462,21 @@ Collect verdicts for the whole queue before merging — I want the full accepted
 Two branches each green *in isolation* can break when **combined** (a clean git merge with broken
 behaviour). So I merge the whole accepted set, then re-gate **once**.
 
-**Every re-gate in this section runs in the FOREGROUND, in the same turn, and its result is read from
-its own real exit status, never from a downstream command's.** No `run_in_background`, no `Monitor`,
-no ending a turn on a pending gate. And **never pipe a gate through `tail`/`head`/`grep` and read the
-pipeline's exit status as the gate's own**: a pipeline's status is its **last** element's, so a
-killed or hung gate can surface as "completed, exit 0" while its own output ends mid-run. **Observed:**
-`nox -s tests 2>&1 | tail -30` exceeded the timeout, was backgrounded, hung, and was killed — and the
-harness reported "completed (exit code 0)" because that 0 was `tail`'s, even though the captured
-output ended in `Session tests failed`. If output must be trimmed, capture the real status first
-(`set -o pipefail`, `${PIPESTATUS[0]}`, or `cmd > file; status=$?; tail -30 file`).
+**Every re-gate here runs in the FOREGROUND, in the same turn, and its verdict is read from its own
+real exit status.** No `run_in_background`, no `Monitor`, no ending a turn on a pending gate.
 
-**This is specifically the lander's problem.** A producer that misreads its own gate hands a bad
-branch to the *next* gate in the chain. I am the **last** gate: nothing re-checks what I certify. A
-misread green here pushes unverified content straight out, which is the one thing `/land` exists to
-prevent.
+**Never pipe a gate through `tail`/`head`/`grep` and read the pipeline's status as the gate's own.**
+A pipeline reports its **last** element's status, so a killed gate surfaces as "completed, exit 0".
+Observed: `nox -s tests 2>&1 | tail -30` hung, was killed, and was reported exit 0 — that 0 was
+`tail`'s, while the captured output ended in `Session tests failed`. To trim output, capture the
+real status first (`set -o pipefail`, `${PIPESTATUS[0]}`, or `cmd > file; status=$?; tail -30 file`).
+
+Misreading a gate matters more here than anywhere: **I am the last gate.** Nothing re-checks what I
+certify, so a false green pushes unverified content straight out.
 
 **A gate that was killed or never completed is neither green nor a content red.** It must not land
-anything and must not bounce anything either — nothing failed on its *content*, the run simply never
-finished. Stop, re-run cleanly with the real exit status captured, then decide.
+anything and must not bounce anything — nothing failed on its *content*. Re-run it cleanly with the
+real status captured, then decide.
 
 ### 3a. Order the accepted set — base before dependent; hold an orphaned dependent
 
@@ -541,20 +514,11 @@ go as well), with the same HELD note.
 persisted to a FILE, never a bash variable.** The summary comes from `metadata.land_summary` or the
 title.
 
-> **On what dirties the tree — stated honestly, because a wrong causal story about a destructive path
-> is worse than an admitted gap.** Measured repeatedly: a bare tracker *read* and a real tracker
-> *write* each leave `git status --porcelain` **empty**. Tracker writes go to Dolt; the tracked
-> `.beads/issues.jsonl` is regenerated and staged by the **pre-commit hook at commit time**. So the
-> per-iteration read hoisted out of the loop is **not** what re-dirties the tree.
->
-> **What has NOT been established is the positive cause.** `bd dolt pull` is *suspected*, but that is
-> a defensive assumption, not a measurement, and a direct attempt to reproduce it did not stage
-> anything. Do not upgrade that hedge into a settled fact.
->
-> **The restore below stays regardless, and its justification does not depend on knowing the cause.**
-> The staged-export failure is real and observed; the export is **by invariant never work**; so
-> restoring it unconditionally is free and correct whatever the trigger turns out to be — precisely
-> the right move *because* the trigger is unestablished.
+> **What stages the export is NOT established.** Measured: neither a tracker read nor a tracker write
+> dirties the tree on its own. `bd dolt pull` is *suspected* and did not reproduce. Do not upgrade
+> that hedge into a settled fact, and do not remove the restore below on the strength of a causal
+> story: the staged-export failure is real and observed, the export is **by invariant never work**,
+> so restoring it unconditionally is correct whatever the trigger turns out to be.
 
 ```bash
 STATE_DIR="$(git rev-parse --git-dir)/land-state"    # under .git/ — survives a later `git reset
@@ -706,6 +670,15 @@ chain reports its last-run command's status, so anything after it would mask the
   the two `git reset --hard HEAD~1` calls are protected only by sharing it. Splitting this block is
   what would silently un-guard the resets.
 
+  **Baseline every gate before attributing anything to a branch.** No gate here is a pure function of
+  the tree, so a red one may have nothing to do with the accepted set — and this loop *deletes* what
+  it blames. An ambient environment variable in the landing shell, set nowhere in the repo, once
+  reddened the suite on a bare origin ref with nothing merged; trusting it would have closed an
+  innocent ticket, opened a rebuild carrying a fabricated "turned the gate red" finding, and deleted
+  a reviewed branch. `lock_currency` fails the same test for its own reason: it asks whether the lock
+  is a fixed point of the tree *plus* ambient tooling *plus* today's index. **A gate added here later
+  inherits this rule.** The cost lands only on the red path.
+
   ```bash
   scripts/assert-main-checkout.sh || exit 1   # STOP — everything below assumes this passed
   git reset --hard origin/main
@@ -727,21 +700,7 @@ chain reports its last-run command's status, so anything after it would mask the
                              # start the replay's record from empty so Section 4 closes only
                              # what THIS loop actually keeps merged
 
-  # BASELINE before attributing anything. THE RULE, stated generally so a gate added here later
-  # inherits it: NO gate this loop attributes is a pure function of the tree, so baseline EVERY
-  # one of them on the bare origin ref before entering the attribution loop. Otherwise the loop
-  # blames — and deletes — whichever innocent branch happened to be merged first. This block is
-  # on the red path only, so a green pass never pays for it.
-  #
-  # The test suite used to be exempt, on the premise that it "asks a question about the tree
-  # alone". That premise licensed a real incident: an ambient environment variable in the
-  # LANDING SESSION's own shell — not set anywhere in this repo — reddened several tests on a
-  # bare, unmodified origin ref with NOTHING merged. Trusting it would have bounced the first
-  # branch in the set: closing its ticket, opening a rebuild ticket with a FABRICATED "turned
-  # the gate red" finding, and deleting the reviewed branch — for a variable this repo does not
-  # set. The lock gate fails the same test for its own reason: it asks whether the committed
-  # lock is a fixed point of the tree PLUS this machine's ambient tooling PLUS today's index,
-  # so it too can be red with no branch involved at all.
+  # BASELINE every gate on the bare origin ref before attributing anything (prose above).
   ./venv/bin/nox -s tests
   #   exit 0 → attributable from here on for THIS gate. Continue.
   #   nonzero → red before any branch merged; not attributable to anything in the set. Stop the
@@ -885,60 +844,45 @@ done
 
 ### Local worktree + branch GC
 
-**This end-of-pass backstop sweep is the ONLY local worktree/branch reclaim.** There used to be a
-per-ticket loop here that read a recorded worktree path off each landed ticket and ran
-`git worktree remove --force` unconditionally — no lock check, no dirty check. It is **deleted**.
-Discovering worktrees live from `git worktree list --porcelain` beats trusting per-ticket metadata
-that can drift, and the sweep catches every just-landed builder worktree on the same pass (this
-pass's merge is what makes each one's HEAD an ancestor).
+**This end-of-pass sweep is the ONLY local worktree/branch reclaim**, and it discovers worktrees
+live from `git worktree list --porcelain` rather than trusting per-ticket metadata that can drift.
 
-**What that costs**, because "the backstop subsumes it" is true of the CANDIDATE set but not the
-RECLAIMED set: the backstop gates on locked + clean + ancestry, none of which the old loop had, so it
-reclaims strictly **less**. A landed builder worktree that is dirty, locked, or carries commits that
-never reached origin is now **kept** where the old loop force-removed it — the dirty case being a
-permanent leak until a human clears it. That is deliberate: **leak a directory rather than destroy
-uncommitted work.**
+**The contract.** Any worktree under `.claude/worktrees/` that is **unlocked**, **clean**, and
+**either** has not diverged from the default branch **or** — if branch-attached — has not diverged
+from its own branch's origin counterpart, is reclaimable, whoever made it. The second arm exists
+because an **escalated** ticket's reviewer worktree never merges by definition; content pushed to
+`origin/land/<id>` is captured just as safely.
 
-**One unenforced coupling keeps this sweep reclaiming anything at all**, and if it breaks the sweep
-silently reclaims *nothing*: **`.gitignore`.** A finished worktree is full of untracked build junk
-(`venv/`, `.nox/`, `__pycache__/`); it reads clean ONLY because those are ignored. Un-ignore one and
-every worktree reads dirty. If you touch `.gitignore`, re-check that this sweep still reclaims.
+The predicates all live in `scripts/worktree-gc-classify.sh`, extracted so they are lint-checked and
+unit-tested rather than unreachable in a markdown fence. This block owns the sweep-level contract;
+the script's header owns the per-arm detail.
 
-**Where the predicates live:** every predicate below — both ancestry arms, the dirty-tree guard and
-its exclude list, the dir-only age floor — lives in `scripts/worktree-gc-classify.sh`, extracted so
-it is shellcheck'd and unit-tested rather than unreachable in a markdown fence. This block holds the
-**sweep-level contract**; the script's header holds the per-arm detail.
+**Why the dirty check exists on top of the ancestry arms.** A worktree freshly branched off the
+default branch is trivially "merged" by **zero divergence**, so that proxy reads TRUE for a live,
+uncommitted build the instant it is created. `git -C "$WT" status --porcelain` tests the actual
+invariant. **A dirty tree is never reclaimed** — regardless of lock state, ancestry, or origin. An
+unguarded zero-divergence read once destroyed two builds' uncommitted work outright. The check also
+distinguishes "clean" (proceed) from "could not tell" (skip): `status --porcelain` prints nothing in
+both cases.
 
-**The contract.** ANY worktree under `.claude/worktrees/` that is **unlocked**, **clean**, and
-**either** has not diverged from the default branch **or** — for a branch-attached worktree — has not
-diverged from its own branch's origin counterpart, is reclaimable, whoever made it. The second arm
-exists because an **escalated** ticket's reviewer worktree never merges by definition, so a
-trunk-only test could never reclaim it; content pushed to `origin/land/<id>` is captured just as
-safely.
+The dirty check, not `locked`, is what protects the worktree classes that raise no lock — an
+interactive session, a human's hand-made worktree, an exited agent's scratch. Only two things lock:
+the **harness**, for the lifetime of an agent standing in a launch worktree; and the **producer**,
+which locks its build worktree explicitly because it unlocks again at its first commit.
 
-A worktree freshly branched off the default branch is trivially "merged" by **zero divergence** — that
-proxy alone reads TRUE for a live, uncommitted build the instant its worktree is created. So the
-sweep also tests the ACTUAL invariant directly: `git -C "$WT" status --porcelain`. **A dirty tree is
-never reclaimed, regardless of lock state, ancestry, or who made the worktree.** That guard is what
-protects the worktree classes holding no lock: an interactive session, a human's hand-made worktree,
-an exited agent's leftover scratch. There are exactly two lock sources and neither covers those:
+**Two accepted residuals**, both chosen so the failure direction is "remove an empty checkout" and
+never "destroy uncommitted work":
 
-1. The **harness** locks every `isolation: worktree` launch worktree for the lifetime of the agent
-   standing in it, released on exit. So a LIVE reviewer/pickup worktree is `locked` and the sweep
-   skips it outright.
-2. The **producer** also locks its build worktree explicitly, because it unlocks again at its first
-   commit — earlier than the harness would.
+- The sweep reclaims strictly **less** than the per-ticket loop it replaced. A landed builder
+  worktree that is dirty, locked, or carries unpushed commits is now *kept* — the dirty case
+  permanently, until a human clears it.
+- A **clean** worktree at zero divergence raising no lock is still reclaimable, so the directory can
+  vanish out from under whoever is standing in it. Nothing is destroyed.
 
-The guard distinguishes "clean" (proceed) from "could not tell" (skip): `status --porcelain` prints
-nothing both when the tree is clean *and* when the command itself errors. An unguarded zero-divergence
-read was once a real hazard — it destroyed two builds' uncommitted work outright before the dirty
-guard existed.
-
-**Accepted residual:** a CLEAN worktree at zero divergence that raises no lock — a human's hand-made
-worktree, or an exited agent's clean leftovers — is still reclaimable. Nothing is destroyed (the tree
-is clean); the directory just vanishes out from under whoever is standing in it. The trade is
-intentional: the failure direction is now "remove an empty checkout," never "destroy uncommitted
-work."
+**One unenforced coupling keeps this sweep reclaiming anything at all: `.gitignore`.** A finished
+worktree is full of untracked build junk (`venv/`, `.nox/`, `__pycache__/`) and reads clean ONLY
+because those are ignored. Un-ignore one and every worktree reads dirty and the sweep silently
+reclaims *nothing*. Re-check this whenever you touch `.gitignore`.
 
 ```bash
 # FIELD ORDER IS LOAD-BEARING — DO NOT REORDER ($BR must stay LAST). Tab is IFS *whitespace*,
@@ -1462,23 +1406,12 @@ authoritative; `.beads/issues.jsonl` is an export-only passive artifact, never a
 - **Trust `builds_on` metadata as the mechanism for detecting a stacked branch.** It's a breadcrumb;
   always derive from git containment.
 - **File a ticket for an incidental discovery** — something I notice about `/land`'s own mechanics
-  mid-pass, not a per-branch verdict. I **report** it instead, and the human reading that report
-  decides whether it becomes a ticket. This is scoped narrowly and does not touch the two sanctioned
-  create paths (the bounce rebuild ticket, and exit (b)) — both are per-branch verdicts, my actual
-  job.
-
-  *Why not-filing loses nothing:* every pass **executes** this skill's own code, so every pass gets
-  the same opportunity to notice the same flaw — the observation recurs on its own, without a ticket
-  to carry it between passes. Proven in practice: three independent passes noticed one dead check and
-  each re-derived it from scratch, filing three duplicates. Not filing removes the dupe generator.
-
-  *Rejected alternative — "search the tracker before filing":* it codifies the improvised filing path
-  instead of removing it, and it aims at a step that never happened — every one of those three
-  filings created the ticket **first** and searched afterwards or not at all. A search-first caveat
-  only binds an agent already consulting this file's filing guidance, and an agent improvising a
-  filing path this file does not sanction is, by construction, not that agent.
-
-  **Not filing is not the same as leaving work for the human** — see below.
+  mid-pass, not a per-branch verdict. I **report** it instead; the human reading that report decides
+  whether it becomes a ticket. Nothing is lost by not filing: every pass executes this skill's own
+  code, so the observation recurs on its own. (Three passes once noticed the same dead check and
+  filed three duplicates.) This does not touch the two sanctioned `bd create` paths — the bounce
+  rebuild ticket and exit (b) — both per-branch verdicts, my actual job. And not filing is **not**
+  the same as leaving work for the human: see below.
 
 ## Stop and report
 

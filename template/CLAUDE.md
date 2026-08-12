@@ -27,6 +27,15 @@ lands grouped. End commit messages with:
 Co-Authored-By: <your agent attribution line>
 ```
 
+## Terms used throughout
+
+These are synonyms, not distinctions. The agent and skill files use both forms:
+
+- **"the default branch"** = **`main`** in this repo. Nothing else is meant by either.
+- **"the tracker"** = **bd**, backed by Dolt. `bd` is the CLI; "the tracker" is the same thing.
+- **"the primary checkout"** = the repo root working tree, as opposed to a worktree under
+  `.claude/worktrees/`.
+
 ## What this is
 
 <One or two paragraphs: what this project is, who it's for, and its current status.>

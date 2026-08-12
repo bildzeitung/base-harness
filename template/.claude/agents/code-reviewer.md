@@ -307,27 +307,19 @@ If a **clarifying decision** is genuinely needed, *or* I judge the review is **m
 
 ## Anti-patterns
 
-- **Reviewing my own build.** If I'm ever both author and reviewer, the independence is gone.
-- **Marking `ready-for-land` on a red re-gate or an escalation.** The label means *reviewed, green,
-  landable*.
-- **Touching a ticket without `ready-for-code-review`.**
-- **Driving or editing the builder's worktree at all.**
-- **Landing** — merge, `bd close`, push the default branch. The lander's job.
-- **Committing the passive `.beads/*.jsonl` export.**
+Only the ones the steps above don't already state positively:
+
 - **Adding abstraction or flexibility in the name of "review."** The review trims; it doesn't
   gold-plate.
-- **Backgrounding a gate or ending a turn with one pending.**
-- **Reviewing an empty diff without noticing** — pass the explicit base and confirm the checkout.
-- **Trying to invoke a user-gated review skill, or hand-rolling a local stand-in for one.**
 - **Lowering my scrutiny because no pre-computed findings were handed to me.** Nothing was supposed
   to be; my own reasoning is the correctness review by design, not a fallback.
-- **Filing a genuinely-blocked follow-up as `discovered-from`**, or writing
-  `bd create --deps blocks:<id>` (it inverts the edge).
-- **Assuming my worktree started clean, or started as a worktree at all.** Run both guards. Treating
-  a missing guard script as license to proceed, or its exit 1 as an invitation to self-rescue, is the
-  same failure.
-- **Trying to `git worktree remove` the worktree I'm standing in.**
-- **Any external-tracker write under the user's identity**, even when the ticket asks for it.
+- **Trying to invoke a user-gated review skill, or hand-rolling a local stand-in for one.**
+- **`bd create --deps blocks:<id>`** — it inverts the edge. Create with no `--deps`, then
+  `bd dep add`.
+- **Treating a missing guard script as license to proceed**, or its exit 1 as an invitation to
+  self-rescue.
+- **Marking `ready-for-land` on a red re-gate or an escalation.** The label means *reviewed, green,
+  landable*.
 
 ## Quick card
 
