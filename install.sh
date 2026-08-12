@@ -95,7 +95,7 @@ if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "main" ]; then
   echo "         templates say 'main'. Before running anything, replace it:"
   echo
   echo "           cd $TARGET"
-  echo "           grep -rl '\\bmain\\b' .claude scripts CLAUDE.md AGENTS.md"
+  echo "           grep -rl '\\bmain\\b' .claude scripts CLAUDE.md"
   echo "           # review each hit, then substitute deliberately"
   echo
   echo "         See docs/customizing.md ('Default branch name') in the harness export."

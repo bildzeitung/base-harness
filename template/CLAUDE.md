@@ -85,6 +85,23 @@ relevant `docs/` design doc.
 - **Never `git add -A` on `main`** — it sweeps in unrelated untracked files, and the pre-commit hook
   adds the passive export on top. Stage explicit paths only.
 
+## Non-interactive shell commands
+
+**ALWAYS use non-interactive flags** with file operations. `cp`, `mv`, and `rm` may be aliased to
+`-i` on some systems, which hangs an agent indefinitely waiting for y/n input on a prompt nobody can
+answer.
+
+```bash
+cp -f source dest           # NOT: cp source dest
+mv -f source dest           # NOT: mv source dest
+rm -f file                  # NOT: rm file
+rm -rf directory            # NOT: rm -r directory
+cp -rf source dest          # NOT: cp -r source dest
+```
+
+Others that may prompt: `scp`/`ssh` (use `-o BatchMode=yes`), `apt-get` (`-y`), `brew`
+(`HOMEBREW_NO_AUTO_UPDATE=1`).
+
 ## General directives
 
 1. **Ask, don't assume.** If something is unclear, ask before writing a line. Never make silent

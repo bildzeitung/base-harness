@@ -193,7 +193,7 @@ def _bare_doc_anchor_refs(text: str, *, skip_fences: bool) -> list[tuple[int, st
     text reference in a file outside ``SCAN_DIRS`` -- no markdown link
     brackets required.
 
-    ``skip_fences`` is on for a markdown source (``README.md``, ``AGENTS.md``,
+    ``skip_fences`` is on for a markdown source (``README.md``, ``CLAUDE.md``,
     ...), reusing ``_content_lines``: an anchor inside a ```` ``` ```` block
     is an example of the syntax, not a citation. It is off everywhere else,
     where a fence-shaped line carries no such meaning -- see

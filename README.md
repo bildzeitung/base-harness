@@ -53,8 +53,7 @@ docs/
   architecture.md       the pipeline, the label protocol, the invariants, why each guard exists
   customizing.md        what to change per project — gates, branch name, commit trailer, models
 template/               the files that get copied into your project
-  CLAUDE.md             project instructions the agents read
-  AGENTS.md             the same, for non-Claude tooling
+  CLAUDE.md             project instructions every agent reads (imported into subagents too)
   .claude/agents/       coding, code-reviewer, land-review
   .claude/skills/       code, land, challenge, epic-audit, sweep, release
   .claude/settings.json hooks, permissions, worktree config

@@ -14,7 +14,7 @@ anything: a silent bulk `sed` across skills and guard scripts is exactly the kin
 this harness exists to prevent. Do it yourself:
 
 ```bash
-grep -rln '\bmain\b' .claude scripts CLAUDE.md AGENTS.md docs
+grep -rln '\bmain\b' .claude scripts CLAUDE.md docs
 ```
 
 The occurrences that actually **matter** (everything else is prose):
