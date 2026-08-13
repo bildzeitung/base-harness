@@ -58,7 +58,7 @@ template/               the files that get copied into your project
   .claude/skills/       code, land, challenge, epic-audit, sweep, release
   .claude/settings.json hooks, permissions, worktree config
   scripts/              the guards, gates, and lock machinery
-  tests/                929 tests that gate the harness's own mechanisms — they pass on a fresh install
+  tests/                939 tests that gate the harness's own mechanisms — they pass on a fresh install
   noxfile.py            the gate sessions the agents invoke (nox -t fix / -s tests / -s lock_currency)
   docs/conventions.md   your project's style fiats (starts nearly empty — fill it in)
 install.sh              copies template/ into a target repo, with a dry-run mode
@@ -80,7 +80,7 @@ install.sh              copies template/ into a target repo, with a dry-run mode
 ./install.sh /path/to/your/project
 cd /path/to/your/project
 ./scripts/harness-doctor.sh
-./venv/bin/pytest tests -q        # 929 passed
+./venv/bin/pytest tests -q        # 939 passed
 ```
 
 Then read [`docs/getting-started.md`](docs/getting-started.md), which walks through the parts

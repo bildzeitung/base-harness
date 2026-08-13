@@ -593,100 +593,60 @@ chain reports its last-run command's status, so anything after it would mask the
 **Neither exit-2 stop restores the local branch** — deliberately; that is Section 1's job.
 
 - **Green** → proceed to Section 4.
-- **Red** → **isolate.** The combined merge is bad but I don't know which branch. Reset back to
-  origin and replay the accepted set **one at a time** (in 3a's order), re-gating after each; keep
-  every branch that stays green, and **bounce** the first that turns the gate red, then continue with
-  the rest — **but if the branch I bounce is a base, its dependents leave the set with it**: don't
-  replay them, hold them. Replaying a dependent whose base just failed merges the failing content
-  back in under a different ticket's name. (The bounce's own descendant check fires here too.)
-
-  This is a fresh invocation, so it needs its **own** primary-checkout guard as its first line —
-  Section 1's cannot reach it. Keep this block's destructive commands below it **in this same fence**:
-  the two `git reset --hard HEAD~1` calls are protected only by sharing it. Splitting this block is
-  what would silently un-guard the resets.
-
-  **Baseline every gate before attributing anything to a branch.** No gate here is a pure function of
-  the tree, so a red one may have nothing to do with the accepted set — and this loop *deletes* what
-  it blames. An ambient environment variable in the landing shell, set nowhere in the repo, once
-  reddened the suite on a bare origin ref with nothing merged; trusting it would have closed an
-  innocent ticket, opened a rebuild carrying a fabricated "turned the gate red" finding, and deleted
-  a reviewed branch. `lock_currency` fails the same test for its own reason: it asks whether the lock
-  is a fixed point of the tree *plus* ambient tooling *plus* today's index. **A gate added here later
-  inherits this rule.** The cost lands only on the red path.
+- **Red** → **isolate.** The combined merge is bad but I don't know which branch. `land-replay.sh`
+  resets back to origin and replays the accepted set **one at a time** in 3a's order, re-gating after
+  each, keeping every branch that stays green:
 
   ```bash
-  scripts/assert-main-checkout.sh || exit 1   # STOP — everything below assumes this passed
-  git reset --hard origin/main
-  STATE_DIR="$(git rev-parse --git-dir)/land-state"   # re-derive; 3a's files under $STATE_DIR
-  MSG_DIR="$STATE_DIR/msg"                            # are untouched by the reset
-  CONFLICTS_DIR="$STATE_DIR/conflicts"
+  STATE_DIR="$(git rev-parse --git-dir)/land-state"
   MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
-  [ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check is DISABLED for this call " >&2
-  # DELIBERATELY ASYMMETRIC with the first-pass loop, which lets an EMPTY accepted set through:
-  # here an empty one is still refused. This block only runs on a RED combined re-gate, and a
-  # nothing-merged pass skips that re-gate entirely, so an empty set should be unreachable —
-  # which is exactly why it stays fatal rather than being relaxed for symmetry. If it ever does
-  # arrive, the tree is byte-identical to origin, so the red is attributable to no branch in
-  # this pass: nothing to isolate, nothing to bounce, and a loud stop is the only honest
-  # outcome. The two blocks answer different questions.
-  ACCEPTED=$(scripts/land-state-load.sh "$STATE_DIR/accepted" --require-nonempty -- \
-    "isolation-replay path — nothing to attribute this red to. Landing nothing.") || exit 1
-  : > "$STATE_DIR/landed"    # the reset discarded every merge the first-pass loop recorded —
-                             # start the replay's record from empty so Section 4 closes only
-                             # what THIS loop actually keeps merged
-
-  # BASELINE every gate on the bare origin ref before attributing anything (prose above).
-  ./venv/bin/nox -s tests
-  #   exit 0 → attributable from here on for THIS gate. Continue.
-  #   nonzero → red before any branch merged; not attributable to anything in the set. Stop the
-  #            pass, land nothing, surface as a human decision — and check the landing shell's
-  #            own environment first.
-  ./venv/bin/nox -s lock_currency
-  #   exit 0 → attributable from here on. Continue.
-  #   exit 1 → the branch's own lock is stale before any merge. Not attributable: stop, land
-  #            nothing, surface as a human decision.
-  #   exit 2 → machine fault: stop the pass, land nothing, surface it verbatim.
-
-  # $ACCEPTED was loaded from the file above — already reduced by any kick-back the first-pass
-  # loop wrote back, so the replay never re-merges one.
-  for id in $ACCEPTED; do
-    # Identical idiom and shape to the first-pass loop — see its comment for why
-    # `if ! CMD; then rc=$?` is wrong here. Keep the two loops the same shape.
-    if CONFLICTS=$(scripts/land-merge-one.sh "$id" "$MSG_DIR" "$MY_TOKEN"); then
-      rc=0
-    else
-      rc=$?
-    fi
-    case "$rc" in
-      0) : ;;   # merged — now gate it below before recording it as a survivor
-      2) exit 1 ;;   # MACHINE FAULT — never a branch verdict. Stop; do not bounce or land.
-      *)
-        # rc=1: real textual conflict against an earlier survivor merged this pass. Kick-back,
-        # not a bounce — its content wasn't judged bad, it just needs to replay.
-        printf '%s\n' "$CONFLICTS" > "$CONFLICTS_DIR/$id"
-        continue
-        ;;
-    esac
-    if ! ./venv/bin/nox -t fix || ! ./venv/bin/nox -s tests; then
-      git reset --hard HEAD~1   # back the culprit out
-      # → bounce <id>; it does NOT land this pass
-      continue
-    fi
-    ./venv/bin/nox -s lock_currency
-    case $? in
-      0) echo "$id" >> "$STATE_DIR/landed" ;;   # survivor — keep it merged and record it
-      2) break ;;                    # machine fault mid-loop, NOT this branch: stop the pass,
-                                     # land nothing. Never bounce on a 2.
-      *) git reset --hard HEAD~1 ;;  # back the culprit out → bounce <id>
-    esac
-  done
+  scripts/land-replay.sh \
+    --accepted "$STATE_DIR/accepted" --landed "$STATE_DIR/landed" \
+    --msg-dir "$STATE_DIR/msg" --conflicts-dir "$STATE_DIR/conflicts" \
+    --state "$STATE_DIR/replay-state" --graph "$STATE_DIR/graph" \
+    --base-ref origin/main --own-token "$MY_TOKEN"
   ```
 
-  **Every "stop the pass" exit above leaves the local branch exactly as it sits.** I restore none of
-  them; that is Section 1's job.
+  **This is a loop I drive, not a single call.** The script works to a deadline (its own default,
+  well under the tool cap) because the replay runs `2 + 3N` gate sessions and a straight-through run
+  would hit that cap mid-attribution — leaving nothing bounced, so the next pass rebuilds the same
+  set and reds again. Re-invoke it, unchanged, until it stops asking for more:
 
-  Read `$?` from the gate itself. The pipeline rule applies with extra force here: never pipe these
-  into `tail`/`grep` and read the *pipeline's* status, which would silently flatten a 2.
+  | Exit | Record | What I do |
+  |---|---|---|
+  | 0 | `SURVIVOR <id>` … | done — every remaining branch is merged and green. Go to Section 4 |
+  | 1 | `CULPRIT <id>` | the branch is already **backed out of the tree**. **Bounce** it (or escalate, if the descendant check finds a live dependent), then **re-invoke** |
+  | 3 | `MORE <n>` | deadline reached, progress persisted. **Re-invoke immediately** — nothing else to do |
+  | 2 | — | machine fault, or a baseline red that no branch can be blamed for. Stop the pass, land nothing further, surface the script's stderr |
+
+  It also emits `CONFLICT <id>` / `HELD <id>` for a branch that conflicts with an earlier survivor —
+  a kick-back, not a bounce, handled exactly as in the first pass.
+
+  **It reports the culprit; it never bounces one.** Bouncing needs the live-descendant check, a
+  supersede, and a rebuild ticket carrying land-review's findings — judgment plus tracker writes, both
+  mine. It likewise does **not** drop a culprit's dependents, because I may escalate rather than
+  bounce, and only I know which. When I do bounce, I drop them myself before re-invoking:
+
+  ```bash
+  scripts/drop-from-accepted.sh <culprit-id> \
+    --accepted "$(git rev-parse --git-dir)/land-state/accepted" \
+    --graph "$(git rev-parse --git-dir)/land-state/graph"
+  ```
+
+  Each `HELD` line it prints is a dependent that owes a HELD note. Skipping this re-merges a
+  dependent whose base just failed the gate, putting the failing content back under a different
+  ticket's name.
+
+  **Why the baseline inside it is not optional.** No gate is a pure function of the tree, so a red one
+  may have nothing to do with the accepted set — and this loop *deletes* what it blames. An ambient
+  environment variable in the landing shell, set nowhere in the repo, once reddened the suite on a
+  bare origin ref with nothing merged; trusting it would have closed an innocent ticket, opened a
+  rebuild carrying a fabricated "turned the gate red" finding, and deleted a reviewed branch. The
+  script baselines every gate before attributing anything, once per replay rather than once per
+  resume.
+
+  **Every "stop the pass" exit leaves the local branch exactly as it sits.** I restore none of them;
+  that is Section 1's job.
 
 ---
 

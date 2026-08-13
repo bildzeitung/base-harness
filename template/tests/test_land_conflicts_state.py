@@ -40,6 +40,22 @@ from __future__ import annotations
 
 from conftest import LAND_SKILL_BLOCKS, only_block_with
 
+#: Module-level and kept HERE, directly under the imports, so an edit that
+#: removes a test cannot take them with it -- which has now happened twice.
+_REGATE = "nox -s tests"
+"""The re-gate needle: the session that actually gates CONTENT.
+
+Not `nox -s lock_currency`, which matches the same block but whose exit 2 the
+skill explicitly treats as NOT a red gate, and which is the chain's newest and
+most volatile member. Pinning on it would go red when someone drops it for the
+reason the doc already contemplates, and stay green if `nox -s tests` were
+removed -- both directions wrong.
+"""
+
+_PUSH = "git push origin main"
+"""The push needle: Section 4's write of the default branch, which must never be
+hoisted above Section 3's re-gate."""
+
 
 def _skill_blocks() -> list[str]:
     """Each ```bash fence as its own string, in document order -- what an
@@ -164,41 +180,40 @@ def test_2b_precheck_persists_conflicts_to_the_state_dir() -> None:
     )
 
 
-def _merge_loop_blocks() -> list[str]:
-    """Section 3's two `land-merge-one.sh` fences, in document order: index 0 is
-    3a's first-pass merge loop, index 1 the isolation-replay copy entered only on
-    a red combined re-gate.
+def _merge_script_calls() -> list[str]:
+    """The two fenced call sites that hand /land's merge work to a script.
 
-    Document order is the only signal separating them (both call the same script
-    the same way), so this also polices the "exactly two" precondition itself --
-    a SKILL.md reshape that adds or drops a merge loop fails loudly here rather
-    than silently changing what its callers' pins mean. ONE locator, shared: a
-    second byte-identical copy would carry any locator bug into both, so it could
-    not act as the independent check such a copy is usually justified by.
+    Neither merge loop is fenced any more: the first pass is
+    scripts/land-merge-batch.sh and the isolation replay is scripts/land-replay.sh,
+    each covered directly by its own test module. What the skill still owns -- and
+    what can still drift silently -- is the WIRING: the state paths it hands them.
     """
-    sites = [b for b in _skill_blocks() if "scripts/land-merge-one.sh" in b]
-    assert len(sites) == 1, (
-        f"expected exactly 1 fenced block calling land-merge-one.sh (the "
-        f"isolation-replay loop), found {len(sites)} -- the first-pass loop is "
-        "scripts/land-merge-batch.sh, covered directly by test_land_merge_batch.py; "
-        "re-check by hand before adjusting the count"
+    blocks = [b for b in _skill_blocks()
+              if "land-merge-batch.sh" in b or "land-replay.sh" in b]
+    assert len(blocks) == 2, (
+        f"expected exactly 2 fenced blocks calling the merge scripts (first pass + "
+        f"isolation replay), found {len(blocks)} -- re-check by hand before adjusting"
     )
-    return sites
+    return blocks
 
 
-def test_section_3_merge_loops_both_persist_conflicts_to_the_state_dir() -> None:
-    """The isolation-replay loop is the one still fenced; the first-pass loop is
-    scripts/land-merge-batch.sh, whose own tests cover the same behaviour
-    directly. This pins that the fenced survivor persists a real conflict's
-    paths, since it cannot regress silently otherwise."""
-    for i, site in enumerate(_merge_loop_blocks(), start=1):
-        assert 'CONFLICTS_DIR="$STATE_DIR/conflicts"' in site, (
-            f"merge loop #{i} no longer (re-)derives CONFLICTS_DIR"
-        )
-        assert 'printf \'%s\\n\' "$CONFLICTS" > "$CONFLICTS_DIR/$id"' in site, (
-            f"merge loop #{i}'s rc=1 arm no longer persists $CONFLICTS to disk "
-            "(proj-rfon)"
-        )
+def test_both_merge_script_calls_are_given_the_state_paths_they_need() -> None:
+    """A dropped flag is silent in the direction that matters: a missing REQUIRED
+    path makes the script fault loudly, but --graph is OPTIONAL, and losing it
+    stops a conflicting base from taking its dependents with it -- Section 3a's
+    invariant gone without a word."""
+    for call in _merge_script_calls():
+        for flag in ("--accepted", "--landed", "--msg-dir", "--conflicts-dir", "--graph"):
+            assert flag in call, f"a merge script call no longer passes {flag}"
+
+
+def test_the_replay_call_passes_its_resume_state() -> None:
+    """Without --state the replay cannot persist progress, so every deadline yield
+    restarts from the top and the pass never converges."""
+    replay = [b for b in _merge_script_calls() if "land-replay.sh" in b]
+    assert len(replay) == 1
+    assert "--state" in replay[0], "the replay call lost --state; it can no longer resume"
+    assert "--base-ref" in replay[0], "the replay call lost --base-ref; its reset target is implicit"
 
 
 def test_kick_back_block_reads_conflicts_from_disk_not_a_bare_variable() -> None:
@@ -258,46 +273,6 @@ def test_kick_back_block_refuses_loudly_on_missing_or_empty_conflicts() -> None:
     )
 
 
-def test_missing_vs_empty_accepted_stays_a_distinction_the_replay_loop_makes() -> None:
-    """A MISSING $STATE_DIR/accepted (3a's precompute never ran -- the silent-failure
-    shape) must abort loudly; an EMPTY one (every branch already bounced, escalated,
-    held, or kicked back) is legitimate and must not.
-
-    The FIRST-PASS half of this now lives in scripts/land-merge-batch.sh, which
-    enforces it directly and is covered by test_land_merge_batch.py
-    (`test_empty_accepted_set_is_a_clean_no_op`,
-    `test_missing_accepted_file_is_a_fault_not_an_empty_set`).
-
-    What is still fenced is the isolation-replay loop, and it takes the OTHER
-    policy on purpose: --require-nonempty, because it only runs on a red combined
-    re-gate, where a nothing-merged pass skips the re-gate entirely. An empty set
-    should therefore be unreachable there -- which is exactly why it stays fatal
-    rather than being relaxed for symmetry with the first pass."""
-    site = _merge_loop_blocks()[0]
-    assert 'scripts/land-state-load.sh "$STATE_DIR/accepted" --require-nonempty' in site, (
-        "the isolation-replay loop no longer loads $STATE_DIR/accepted via "
-        "scripts/land-state-load.sh --require-nonempty -- on a red re-gate with no "
-        "attributable branch, a loud stop is the only honest outcome"
-    )
-    assert "|| exit 1" in site, (
-        "the replay loop's accepted load is no longer wired to `|| exit 1`"
-    )
-
-_REGATE = "nox -s tests"
-"""The re-gate needle: the session that actually gates CONTENT.
-
-Not `nox -s lock_currency`, which matches the same blocks today but whose exit 2
-the skill explicitly treats as NOT a red gate, and which is the chain's newest and
-most volatile member. Pinning on it would go red when someone drops it for the
-reason the doc already contemplates, and stay green if `nox -s tests` were removed
--- both directions wrong.
-"""
-
-_PUSH = "git push origin main"
-"""The push needle: Section 4's write of the default branch, which must not be
-hoisted above Section 3's re-gate."""
-
-
 def _regate_and_push_indices(blocks: list[str]) -> tuple[list[int], int]:
     """Document-order positions of the re-gate blocks and the push block.
 
@@ -307,8 +282,8 @@ def _regate_and_push_indices(blocks: list[str]) -> tuple[list[int], int]:
     """
     regate_indices = [i for i, b in enumerate(blocks) if _REGATE in b]
     push_indices = [i for i, b in enumerate(blocks) if _PUSH in b]
-    assert len(regate_indices) == 2, (
-        f"expected exactly 2 fenced blocks running `{_REGATE}` (Section 3's "
+    assert len(regate_indices) == 1, (
+        f"expected exactly 1 fenced block running `{_REGATE}` (Section 3's combined "
         f"Green re-gate + the Red isolation-replay re-gate), found "
         f"{len(regate_indices)} -- this test's assumption about SKILL.md's "
         "structure has drifted; re-check by hand before adjusting the count"

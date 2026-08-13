@@ -33,7 +33,7 @@ nothing.
 
 ## Do I need all of them?
 
-The suite is 37 modules / 929 tests / ~35s. The test *count* is mostly parametrisation —
+The suite is 40 modules / 939 tests / ~90s. The test *count* is mostly parametrisation —
 `test_gh_write_guard` alone contributes ~174 cases, one per `gh` command form, in 1.4s. Count is not
 cost.
 
