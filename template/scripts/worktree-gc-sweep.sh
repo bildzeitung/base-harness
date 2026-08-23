@@ -32,22 +32,41 @@
 # and reads clean ONLY because those are ignored. Un-ignore one and every
 # worktree reads dirty and this sweep silently reclaims NOTHING.
 #
-# Usage: scripts/worktree-gc-sweep.sh [--base-ref <ref>]
+# Usage: scripts/worktree-gc-sweep.sh
 # Exit codes: 0 = swept (summary on stdout), 2 = machine fault / wrong checkout.
+#
+# NO --base-ref FLAG. An earlier revision accepted one, but it
+# governed backstop 3's `git branch --merged` ONLY -- it never reached the
+# worktree sweep (that decision belongs to scripts/worktree-gc-classify.sh,
+# which takes no base ref and hardcodes `main`, a character-for-character port
+# of the condition this loop used when it lived in a markdown fence) or
+# backstop 2 (which keys off remote existence, no base ref at all). Passing
+# anything but `main` would therefore have judged bare builder refs against
+# one branch while every `worktree remove --force` still judged against
+# `main` -- two different notions of "captured" inside one destructive pass.
+# This repo has exactly one default branch and no non-test caller ever
+# passed a non-default value; the flag was dropped rather than threaded
+# through to the classifier. `main` is now a literal at the one site that
+# ever consumed it.
+#
+# That unifies the BASE REF, not the whole predicate: the classifier's capture
+# test is the widened one (ancestor of `main` OR of the branch's own
+# `origin/<branch>`), while backstop 3 below is still the narrower `git branch
+# --merged main` alone. A bare builder ref captured only on `origin/<branch>`
+# is therefore reclaimed as a worktree but kept as a ref. That divergence
+# predates this change and is deliberately left alone here -- widening a
+# `branch -D` is its own decision, deferred in the source project.
+#
+# Not sourced from scripts/gate-lib.sh, though the "GATE COULD NOT RUN" banner
+# below is that library's: same abstention as scripts/assert-main-checkout.sh
+# makes, for the same reason -- gate-lib.sh's exit 2 means "could not judge the
+# CONTENT", and this is a sweep with a precondition guard, not a content gate.
 set -u
 
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || TOP=""
 [ -n "$TOP" ] || { echo "GATE COULD NOT RUN: not inside a git repository" >&2; exit 2; }
 
-BASE_REF_NAME="main"
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --base-ref) shift; [ "$#" -gt 0 ] || { echo "GATE COULD NOT RUN: --base-ref needs a value" >&2; exit 2; }
-                BASE_REF_NAME="$1" ;;
-    *) echo "GATE COULD NOT RUN: unknown argument '$1'" >&2; exit 2 ;;
-  esac
-  shift
-done
+[ "$#" -eq 0 ] || { echo "GATE COULD NOT RUN: unknown argument '$1' (this script takes none)" >&2; exit 2; }
 
 # Every destructive call below is ref- or path-addressed, but the sweep as a
 # whole only makes sense from the primary checkout -- and running it from a
@@ -108,6 +127,11 @@ while IFS=$'\t' read -r WT SHA LOCKED BR; do
       fi
       ;;
     full-reclaim)
+      # ASYMMETRY, DELIBERATE: the DIRECTORY removal is checked, the ref delete is
+      # not -- `full=N` means "directory gone", not "directory and ref gone". A
+      # refused `branch -D` leaks a ref, which is the safe direction and which
+      # backstops 2 and 3 below exist to collect on a later pass; a refused
+      # `worktree remove` would leave the directory live, which is not.
       if git worktree remove --force "$WT"; then
         [ -n "$BR" ] && git branch -D "$BR" 2>/dev/null || true
         RECLAIMED=$((RECLAIMED + 1))
@@ -177,10 +201,12 @@ fi
 # as backstop 2 but the OTHER namespace, invisible to both nets above, accumulating without
 # bound (17 confirmed orphans on one machine). This namespace needs a DIFFERENT guard: a
 # builder branch is never pushed to origin, so "remote gone" is meaningless here and would
-# delete a LIVE, still-building branch. The correct guard is the same PREDICATE the worktree
+# delete a LIVE, still-building branch. The correct guard is the same NOTION the worktree
 # sweep applies — captured elsewhere — reached by a branch-NAME lookup, because a bare ref has
 # no worktree and therefore no HEAD line to test; plus not currently checked out anywhere.
-MERGED=$(git branch --merged "$BASE_REF_NAME" --format='%(refname:short)')
+# Same base ref (`main`), but a NARROWER predicate than the classifier's: no
+# `origin/<branch>` arm here — see the header. Deliberate; this arm ends in `branch -D`.
+MERGED=$(git branch --merged main --format='%(refname:short)')
 CHECKED_OUT=$(git worktree list --porcelain | awk '/^branch refs\/heads\//{print substr($0,19)}')
 B3_DELETED=0; B3_FAILED=0
 while read -r BR; do

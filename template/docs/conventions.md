@@ -40,6 +40,21 @@ Every option and argument uses the `Annotated` form — `x: Annotated[Path | Non
 parameter, including the `bool`/`str` ones the linter does not flag; the lint's own blind spot is
 what made the file inconsistent in the first place.
 
+## Comments: state a constraint, invariant, or "why" — never narrate the edit
+
+A comment earns its place only by stating a constraint, invariant, or *why* that the code itself
+cannot show. Contrastive anchor: `# increment counter` → delete (the code already says this); `#
+counter is 1-based to match the wire protocol` → keep (the code can't say this on its own).
+
+**Change-narration comments are forbidden.** A comment that describes the *edit* rather than the
+code — "now uses X", "moved from Y", "changed to handle Z" — belongs in the commit message, not the
+source.
+
+**Exemptions (the single source — anything auditing comments in this repo reads this list, and
+never keeps its own copy):** license headers; docstrings serving an API/help contract; lint
+directives (`# noqa`, `# fmt: skip`); a TODO/FIXME carrying a live bd id; shebang/encoding lines;
+comments inside vendored or generated files.
+
 ## Derive identifiers, never retype them
 
 A long opaque identifier — a full git SHA, a ticket id, a `.claude/worktrees/` hash — is never

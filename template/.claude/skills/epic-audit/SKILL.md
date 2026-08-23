@@ -174,6 +174,13 @@ are resolved.
 - **Commit or `bd import` the passive `.beads/*.jsonl`** in place of the push script.
 - **Record a design decision in a tracker note** instead of `docs/` — that forks the record. A gap
   that is really a design question is an escalation, and its resolution lands in `docs/`.
+- **Append to MISTAKES.md directly.** I have no `isolation: worktree` and I write only the tracker —
+  no `git`, no repo file edits (see the list above) — so I'm in the same position as the main session
+  under the never-edit-on-the-default-branch rule. If reviewing a delivered epic turns up a mistake
+  meeting the mistake log's bar, I report it in my Stop-and-report readout instead, as a
+  `MISTAKES.md CANDIDATE` block in the log's entry shape (the same block name `land-review` uses, so
+  it is greppable across reports). Filing it is for whoever reads that report: a human directly, or a
+  `/code`-dispatched producer whose `coding.md` already carries the autonomous filing instruction.
 
 ## Stop and report
 

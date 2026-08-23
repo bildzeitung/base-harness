@@ -131,3 +131,10 @@ and stop after the readout.
 I never edit `docs/` or a ticket's `design` field as a side effect of challenging — persistence is to
 `notes` only, and only by appending. Recording a corrected approach to `--design`, or writing a
 `docs/` change, stays a separate step you ask for.
+
+**MISTAKES.md: nothing for me to add.** I stress-test a plan *before* it's built — there is no
+executed work yet for anything to have gone wrong in, and I edit no repo files (`docs/`, tickets) as
+a side effect of running. If I'm handed a plan that turns out to already describe a past incident
+matching the mistake log's bar, that's a `MISTAKES.md CANDIDATE` block in my readout (the same block
+name the other report-only stages use), not something I file myself — filing happens in the stage
+that actually builds or lands the work.

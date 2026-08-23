@@ -123,7 +123,7 @@
 #
 #   SHOWN SAFE TO CONTINUE PAST -- deliberately unguarded:
 #     - `set -uo pipefail` itself, and the literal/parameter-expansion
-#       assignments `IMAGE="minlag/mermaid-cli:latest"` / `fail=0` /
+#       assignments `IMAGE="minlag/mermaid-cli:10.9.1"` / `fail=0` /
 #       `found=0` / `rel="docs/${f##*/}"` / `found=1` / `fail=1` / `rc=$?` --
 #       none of these can fail: a literal assignment to a plain variable
 #       can't, and parameter expansion (`${f##*/}`) can't either.
@@ -185,7 +185,10 @@
 # open -- worth remembering if a new variable reference is added here.
 set -uo pipefail
 
-IMAGE="minlag/mermaid-cli:latest"
+# Pinned to the SAME tag scripts/update-images.sh pulls (previously a
+# floating `:latest`, which let the pulled image and the validated parser
+# version drift apart across machines). Bump the two together.
+IMAGE="minlag/mermaid-cli:10.9.1"
 
 # The ONE owner of the gate-could-not-run contract: the banner callers key on,
 # the caller's cause lines, the standing instruction to a reader, and exit 2.

@@ -127,8 +127,8 @@ echo "$ACQUIRE_OUT"
 # consumer read it: this is lock state, not per-pass scratch.
 # Loud-fail if the pattern doesn't match rather than silently persisting an empty token.
 printf '%s\n' "$ACQUIRE_OUT" \
-  | grep -oE 'token [0-9a-f]+' | cut -d' ' -f2 > "$(git rev-parse --git-dir)/land-lock-token"
-[ -s "$(git rev-parse --git-dir)/land-lock-token" ] || {
+  | grep -oE 'token [0-9a-f]+' | cut -d' ' -f2 > "$(git rev-parse --path-format=absolute --git-common-dir)/land-lock-token"
+[ -s "$(git rev-parse --path-format=absolute --git-common-dir)/land-lock-token" ] || {
   echo "land: could not parse this pass's own token out of: $ACQUIRE_OUT" >&2
   # RELEASE BEFORE BAILING. We hold the lock as of two lines ago, and this is the only exit
   # path in the whole skill that aborts while holding it — without this, a parse bug wedges
@@ -249,8 +249,12 @@ untested, for an algorithm whose failure is silent. Run it once per pass:
 ```bash
 STATE_DIR="$(git rev-parse --git-dir)/land-state"   # re-derive — fresh Bash invocation
 mkdir -p "$STATE_DIR"
-scripts/stacked-graph.sh --base-ref origin/main --report-unordered \
-  | tee "$STATE_DIR/graph"
+# REDIRECT, never `| tee`: a pipeline reports the LAST command's status, so `| tee` would
+# hand back tee's always-0 exit and swallow the script's exit 2 — leaving a truncated or empty
+# $STATE_DIR/graph that the merge scripts below read as a valid "no stacks" graph. That is exactly how
+# a dependent gets merged before its base, which is what the exit-2 rule below exists to prevent.
+scripts/stacked-graph.sh --base-ref origin/main --report-unordered > "$STATE_DIR/graph" || exit 1
+cat "$STATE_DIR/graph"   # the visibility `tee` used to give, now that the status is the script's own
 ```
 
 Output is one tab-separated record per line:
@@ -513,7 +517,8 @@ through `scripts/land-state-load.sh`, whose two policies (default = missing fata
 than hand-rolling a fifth `cat` spelling. What the assertion separates is not "empty" from "a real
 merge", but its two **causes**: a file that was never written (3a never ran — the silent failure,
 aborted loudly) from a file written empty (every branch legitimately left the set — allowed through).
-**Do not re-add an emptiness test to the first-pass merge loop** — that conflates the two again.
+**Do not re-add an emptiness test on top of that load** — in `scripts/land-merge-batch.sh` (which
+owns the first-pass loop now) or anywhere else — that conflates the two again.
 
 Before merging anything, unstage the passive export — unconditionally. A staged export means its
 index blob differs from `HEAD` while the worktree matches the index, so `git diff` reads **clean** in
@@ -541,7 +546,9 @@ its own primary-checkout identity internally, so this block needs no separate gu
 ```bash
 STATE_DIR="$(git rev-parse --git-dir)/land-state"   # re-derive — fresh Bash invocation; nothing
                                                     # from 3a persists except the FILES it wrote
-MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
+MY_TOKEN="$(cat "$(git rev-parse --path-format=absolute --git-common-dir)/land-lock-token" 2>/dev/null || true)"
+[ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check is" \
+  "DISABLED for this call " >&2
 scripts/land-merge-batch.sh \
   --accepted "$STATE_DIR/accepted" --landed "$STATE_DIR/landed" \
   --msg-dir "$STATE_DIR/msg" --conflicts-dir "$STATE_DIR/conflicts" \
@@ -599,7 +606,9 @@ chain reports its last-run command's status, so anything after it would mask the
 
   ```bash
   STATE_DIR="$(git rev-parse --git-dir)/land-state"
-  MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" 2>/dev/null || true)"
+  MY_TOKEN="$(cat "$(git rev-parse --path-format=absolute --git-common-dir)/land-lock-token" 2>/dev/null || true)"
+  [ -n "$MY_TOKEN" ] || echo "land: WARNING -- no own-token available; land-lock ownership check" \
+    "is DISABLED for this call " >&2
   scripts/land-replay.sh \
     --accepted "$STATE_DIR/accepted" --landed "$STATE_DIR/landed" \
     --msg-dir "$STATE_DIR/msg" --conflicts-dir "$STATE_DIR/conflicts" \
@@ -683,6 +692,50 @@ git status --short
                                                 # pre-commit hook so it can't re-stage the export
   git show --stat HEAD                          # confirm only the intended paths rode along
   ```
+
+**MISTAKES.md — narrow, explicit exception to "report the patch, not the gap."** This check is owed
+**every `/land` pass that reaches a verdict on at least one branch — not conditional on this pass
+having an accepted set to merge.** It lives here, in Section 4, because that is where the push
+already sits and the common case (some branches landed) reaches it naturally here. But `land-review`
+returns a `MISTAKES.md CANDIDATE` on every verdict, not only bounce/escalate, so a pass where every
+branch bounces, kicks back `needs-rebase`, or escalates — leaving no accepted set, and on some paths
+never reaching this section at all — still owes this check. If this section runs this pass, it runs
+here, as below. If it does **not** — no branch was merged and nothing below this point executes — the
+identical block runs instead from [Stop and report](#stop-and-report)'s own entry point for that
+case, which also pushes the entry itself (`git push origin main`), since no merge push follows it
+there. Before the push below, check whether this pass surfaced a qualifying mistake — either one I
+noticed myself this pass, or a `MISTAKES.md CANDIDATE` block a `land-review` dispatch returned this
+pass — it cannot commit from its disposable worktree, so filing is mine. "Qualifying" is the mistake
+log's bar: it destroyed or risked real work, or shipped a wrong artifact, **and** a concrete
+prevention rule can be derived from it — not every bounce or drift. If nothing qualifies this pass,
+skip this block entirely. If something does:
+
+```bash
+scripts/assert-main-checkout.sh || exit 1     # same reason as the reformat commit above
+# Dedup by INCIDENT, not exact wording -- one exact phrase would miss the same root cause
+# re-described in different words. -i: case-insensitive; -E: alternate a few candidates -- the
+# ticket id if one exists, the file/script/mechanism at fault, and a couple of paraphrases of the
+# failure -- rather than one fixed sentence.
+grep -niE "<ticket id>|<mechanism or file at fault>|<a paraphrase of the failure>" MISTAKES.md
+```
+
+- **Already present** (a prior stage — a producer in its worktree, the code-reviewer, an earlier
+  `/land` pass — already filed the same incident) → skip. Entries are append-only; do not double-file.
+- **Not present** → append a new entry at the **top** of the log (newest first) — what happened /
+  root cause / consequence / the rule that prevents a repeat — then commit it **directly on `main`**.
+  This file is append-only prose with no gate risk (no code, no tests, nothing the gates or a
+  technical review would catch), so unlike an ordinary "gap" its remedy is never a decision that
+  needs review:
+
+  ```bash
+  scripts/assert-main-checkout.sh || exit 1     # fresh Bash invocation; this commit names no ref or path either
+  git add MISTAKES.md
+  git commit --no-verify -q -m "docs: record <short incident name> in MISTAKES.md"   # --no-verify: same pre-commit hook reason as above
+  git show --stat HEAD   # confirm only MISTAKES.md rode along
+  ```
+
+  This commit rides in the same push as the reformat commit above and the merge commits already on
+  `main` — I do not push separately per entry.
 
 ```bash
 git push origin main
@@ -777,7 +830,7 @@ because those are ignored. Un-ignore one and every worktree reads dirty and the 
 reclaims *nothing*. Re-check this whenever you touch `.gitignore`.
 
 ```bash
-scripts/worktree-gc-sweep.sh --base-ref main
+scripts/worktree-gc-sweep.sh
 ```
 
 It prints one summary line per sweep plus one per bare-ref backstop. **"reclaimed 0 of 0" (nothing to
@@ -988,7 +1041,10 @@ bd update <id> --acceptance="<revised, unambiguous acceptance criteria>"
 # re-enters with no reviewer in between; exits (b) and (d) route through a reviewer, which
 # refreshes land_head itself.
 # --set-metadata (upsert), NOT --metadata (a whole-blob replace that drops the other keys).
-bd update <id> --set-metadata land_head="$(git rev-parse origin/land/<id>)"   # omit if nothing committed
+# Derive-then-validate before the write — a malformed value here reads as drift on a later pass.
+LAND_HEAD="$(git rev-parse origin/land/<id>)"                                 # omit if nothing committed
+scripts/validate-sha40.sh land_head "$LAND_HEAD" || exit $?
+bd update <id> --set-metadata land_head="$LAND_HEAD"
 bd update <id> --remove-label land-escalated --add-label ready-for-land
 scripts/bd-dolt-push.sh
 ```
@@ -1155,13 +1211,58 @@ authoritative; `.beads/issues.jsonl` is an export-only passive artifact, never a
   always derive from git containment.
 - **File a ticket for an incidental discovery** — something I notice about `/land`'s own mechanics
   mid-pass, not a per-branch verdict. I **report** it instead; the human reading that report decides
-  whether it becomes a ticket. Nothing is lost by not filing: every pass executes this skill's own
+  whether it becomes a ticket. (This rule is about **tracker tickets**; a MISTAKES.md append is a doc
+  write, and its sanctioned path is in [Section 4](#4-land-the-survivors).) Nothing is lost by not filing: every pass executes this skill's own
   code, so the observation recurs on its own. (Three passes once noticed the same dead check and
   filed three duplicates.) This does not touch the two sanctioned `bd create` paths — the bounce
   rebuild ticket and exit (b) — both per-branch verdicts, my actual job. And not filing is **not**
   the same as leaving work for the human: see below.
 
 ## Stop and report
+
+### MISTAKES.md filing on a pass that never reaches Section 4
+
+If this pass reached [Section 4](#4-land-the-survivors) and ran its own MISTAKES.md block, that
+already covers this pass — nothing further to do here. But whenever this pass ends with **no accepted
+set to merge** on a path that skips Section 3 and Section 4 entirely (every branch bounced, kicked
+back `needs-rebase`, or escalated; or the pass stopped early on a machine fault), the check is still
+owed — `land-review` can return a `MISTAKES.md CANDIDATE` on any verdict, not only when a branch also
+happens to land. Before releasing the lock, check whether this pass surfaced a qualifying mistake —
+one I noticed myself, or a `MISTAKES.md CANDIDATE` a `land-review` dispatch returned this pass — using
+the same bar and the same block [Section 4](#4-land-the-survivors) uses (the mistake log's bar; dedup
+by incident via `grep -niE`, never one exact phrase). If nothing qualifies, skip this entirely. If
+something does, run it here, verbatim:
+
+```bash
+scripts/assert-main-checkout.sh || exit 1     # same reason as Section 4's copy
+grep -niE "<ticket id>|<mechanism or file at fault>|<a paraphrase of the failure>" MISTAKES.md
+```
+
+- **Already present** → skip. Entries are append-only; do not double-file.
+- **Not present** → append a new entry at the **top** of the log (newest first) — what happened /
+  root cause / consequence / the rule that prevents a repeat — then commit it directly on `main`,
+  same as Section 4's copy:
+
+```bash
+scripts/assert-main-checkout.sh || exit 1
+git add MISTAKES.md
+git commit --no-verify -q -m "docs: record <short incident name> in MISTAKES.md"
+git show --stat HEAD   # confirm only MISTAKES.md rode along
+```
+
+**This path has no merge push to ride in on — push it myself, right here**, since Section 4's own
+`git push origin main` never runs on this path:
+
+```bash
+scripts/assert-main-checkout.sh || exit 1
+# This push must carry the MISTAKES.md doc commit and NOTHING ELSE. Section 4's re-gate is the
+# only thing that certifies merge output, and it did not run this pass -- so if anything other
+# than the single commit just made is unpushed, this path is not the right one to push it.
+# STOP and report instead; never advance origin/main past un-re-gated content.
+test "$(git rev-list --count origin/main..main)" = 1 || exit 1
+git push origin main
+git status                 # MUST show main up to date with origin
+```
 
 When the pass ends I release the lock and report: how many branches I reviewed; which **landed**
 (with the merge SHA, in merge order); which I **kicked back** (they never reached the semantic

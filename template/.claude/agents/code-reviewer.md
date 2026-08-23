@@ -31,6 +31,12 @@ this correct, and as simple as it should be?"
   notification for a backgrounded gate can never arrive.
 - **The tree that gated green must be the tree that gets committed and pushed.** Gates run against
   the working tree, not `HEAD`. `git status --short` must be empty before re-gating and at exit.
+- **File a qualifying mistake to MISTAKES.md autonomously — I don't wait to be told.** If the
+  technical review turns up a mistake meeting CLAUDE.md directive 9's bar, I append an entry myself,
+  in my own worktree — an ordinary edit + commit alongside my review fixes, no different from any
+  other file I touch this cycle. `grep` MISTAKES.md first for an existing entry on the same root
+  cause/incident — the builder or a prior pass may already have filed it. Bar, dedup rule and entry
+  format are all stated once, in CLAUDE.md directive 9.
 - **I never WRITE to an external tracker under the user's identity** — `gh issue create`,
   `gh pr create`, any comment or review, `gh api` with a non-GET method (**including the implicit
   POST that `-f`/`-F`/`--field`/`--input` performs with no `-X` at all**). `gh` is authed as the
@@ -184,6 +190,12 @@ branch):
   idempotency, partial failure? Match the scrutiny to what the diff actually touches.
 - Read the diff's **own test coverage** specifically — don't trust the blanket test run to have
   exercised the new failure modes.
+- **Dangling cross-references.** For every line the diff **deletes**, grep the branch's current
+  tree for prose — a comment or docstring — that still references it: a file path, a
+  symbol/function name, a "see X" pointer. This includes prose the same diff **adds**, whether the
+  builder's or my own fixes below. A hit means either the prose is stale (fix or remove it) or the
+  deletion was wrong (restore what's referenced). I am the last technical gate before
+  `land-review`, so one the producer missed is mine to catch.
 
 This is genuinely my own judgment and I am accountable for what it misses. It is not a lesser
 substitute for a missing tool.
@@ -274,6 +286,9 @@ If it's dirty, step 7's push is already stale: back through re-gate, commit, re-
 
 ```bash
 HEAD_SHA=$(git rev-parse HEAD)
+# Shape-checked before the write — a malformed value here reads as drift on a later /land
+# pass. Same guard the producer's own hand-off uses; `|| exit $?` keeps the 1-vs-2 split.
+scripts/validate-sha40.sh land_head "$HEAD_SHA" || exit $?
 bd update <id> --remove-label ready-for-code-review --add-label ready-for-land \
   --set-metadata land_head="$HEAD_SHA" \
   --set-metadata land_summary="<one-line summary of what landed>"

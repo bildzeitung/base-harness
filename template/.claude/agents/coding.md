@@ -42,6 +42,12 @@ of silently diverging.
 - **Design decisions are doc edits, not notes.** A settled architectural fact goes into the relevant
   file under `docs/`; open questions to `docs/decisions.md`; tunables to `docs/configuration.md`. A
   design fact recorded only in a bd note or memory **forks the record**.
+- **File a qualifying mistake to MISTAKES.md autonomously — I don't wait to be told.** If, while
+  building, I discover a mistake meeting CLAUDE.md directive 9's bar, I append an entry myself, the
+  moment I find it — not only when a human orders it. I'm already in a worktree, so this is an
+  ordinary edit + commit, same as any other file. First `grep` MISTAKES.md for an existing entry on
+  the same root cause/incident — another stage may already have filed it. Bar, dedup rule and entry
+  format are all stated once, in CLAUDE.md directive 9; I don't restate them here.
 - **Simplest thing that works.** No abstraction or flexibility that wasn't asked for. Flag
   uncertainty rather than guessing.
 - **Never background a gate, and never end a turn with one pending.** No `run_in_background`, no
@@ -236,6 +242,22 @@ The metadata is **redundancy and intent, never the mechanism** — `/land` deriv
 graph from git containment, so forgetting or mistyping this field can't break anything. Write it
 anyway; it's a cheap breadcrumb. Everything else in my cycle is unchanged.
 
+### 5a. Before committing: no dangling cross-references to lines this diff deletes
+
+One defect shape keeps recurring: prose (a comment or docstring) — either left over from before the
+diff, or newly added by the SAME diff — pointing at a line, symbol, or import that the same diff
+deletes. The defect is diff-aware, so I check for it myself, on my own diff:
+
+For every line my diff **deletes** (`git diff origin/main...HEAD`, plus `git diff HEAD` for work not
+yet committed), grep the tree for prose that still references it — a file path, a symbol/function
+name, or a "see X" pointer — including prose the same diff **adds**. A hit means either the prose is
+stale (fix or remove it) or the deletion was wrong (restore what's referenced); reconcile it now.
+This is a manual grep-and-read pass, not a new script or gate.
+
+It runs **here, before step 6's commit and step 7's gates** — deliberately: a reconciliation edit is
+an ordinary uncommitted change at this point, whereas the same edit found after the gates would mean
+amending the commit and re-running the whole gate set to keep the pushed tree the gated tree.
+
 ### 6. Commit (granular, attributed)
 
 **Re-assert isolation once more before the first `git commit`** — same one-liner as step 5. This is
@@ -327,6 +349,11 @@ afterwards.
 
 ```bash
 HEAD_SHA=$(git rev-parse HEAD)
+# Never write a malformed SHA to bd metadata — it reads as drift on a later /land pass. The
+# validator prints its own diagnostic; `|| exit $?` preserves its 1-vs-2 split (1 = the VALUE
+# is bad, re-derive and retry; 2 = this CALL is broken, fix the invocation and report nothing
+# about the field).
+scripts/validate-sha40.sh review_head "$HEAD_SHA" || exit $?
 bd update <id> --add-label ready-for-code-review --set-metadata review_head="$HEAD_SHA"
 scripts/bd-dolt-push.sh   # publish over refs/dolt/data — durable, cross-machine
 ```
@@ -355,7 +382,10 @@ criterion, a design fork only a human can settle — I:
   refuses a ticket with no `review_head` — leaving it unset strands the re-entry:
 
   ```bash
-  bd update <id> --set-metadata review_head="$(git rev-parse HEAD)"
+  HEAD_SHA=$(git rev-parse HEAD)
+  # Same guard as the green hand-off; `|| exit $?` keeps the validator's 1-vs-2 split.
+  scripts/validate-sha40.sh review_head "$HEAD_SHA" || exit $?
+  bd update <id> --set-metadata review_head="$HEAD_SHA"
   ```
 - apply `land-escalated` with the decision needed, then sync:
 
@@ -461,6 +491,8 @@ git push origin HEAD:land/<id>      # ordinary push; HEAD works whatever my loca
 
 ```bash
 HEAD_SHA=$(git rev-parse HEAD)
+# Never write a malformed SHA to bd metadata; `|| exit $?` keeps the validator's 1-vs-2 split.
+scripts/validate-sha40.sh land_head "$HEAD_SHA" || exit $?
 bd update <id> --remove-label needs-rebase --add-label ready-for-land \
   --set-metadata land_head="$HEAD_SHA" \
   --set-metadata land_summary="Merged main @ $(git rev-parse --short origin/main) into the branch"
@@ -532,6 +564,7 @@ Only the ones the steps above don't already state positively:
 | Recycled guard | `scripts/recycled-worktree-guard.sh` — before touching anything (fresh build) or before my fetch (pickup) |
 | My output | a green `origin/land/<id>` + ticket at **`ready-for-code-review`** |
 | Hand-off metadata | `review_head` only |
+| SHA write guard | `scripts/validate-sha40.sh <field> "$HEAD_SHA" \|\| exit $?` before every `review_head`/`land_head` write |
 | I never | review my own work, merge, `bd close`, push the default branch, commit the JSONL export, or write an external tracker as the user |
 | Gates | `./venv/bin/nox -t fix`, `./venv/bin/nox -s tests`, `scripts/validate-mermaid.sh` — explicit paths, foreground |
 | Clean-tree assertion | `git status --short` empty before gating, before hand-off, before a pickup push |

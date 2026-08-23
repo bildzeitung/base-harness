@@ -45,8 +45,18 @@ def format_and_lint(session: nox.Session) -> None:
 
 @nox.session
 def tests(session: nox.Session) -> None:
-    """The test suite."""
-    session.run(_venv_tool("pytest"), "-q", "-n", TEST_WORKERS, *session.posargs, external=True)
+    """The test suite.
+
+    Two invocations that exhaustively partition the suite on
+    ``@pytest.mark.serial`` (registered in tests/conftest.py): everything else
+    in the pytest-xdist parallel pool, then the serial tests with no workers at
+    all. A ``serial`` test asserts a wall-clock budget that sibling workers'
+    scheduler noise would make flaky. No test is skipped and none runs twice —
+    the partition is the only thing the marker changes.
+    """
+    pytest = _venv_tool("pytest")
+    session.run(pytest, "-q", "-m", "not serial", "-n", TEST_WORKERS, *session.posargs, external=True)
+    session.run(pytest, "-q", "-m", "serial", "-n", "0", *session.posargs, external=True)
 
 
 @nox.session

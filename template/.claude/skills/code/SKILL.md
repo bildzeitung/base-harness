@@ -353,3 +353,8 @@ and head SHA, and that it reached `ready-for-land`.
 - This skill is the **only** sanctioned way to spin up coding work from the main session.
 - If an argument is genuinely ambiguous — looks like an ID but isn't one that exists, or a fan-out
   set with hidden dependencies — ask before dispatching rather than guessing.
+- **MISTAKES.md: nothing for this skill to add.** `/code` dispatches `coding` and `code-reviewer` and
+  relays what they report; it never touches repo files itself and discovers nothing firsthand — any
+  qualifying mistake surfaces inside a dispatched subagent's own worktree, and that subagent's own
+  instruction file (`coding.md`, `code-reviewer.md`) already carries the autonomous filing
+  instruction. Nothing routes through this skill.

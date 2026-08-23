@@ -80,11 +80,25 @@ for id in $ORDER; do
   [ -n "$id" ] || continue
   # Still in the set? A base that conflicted earlier this run has already taken
   # this branch out, and merging it anyway is the exact hole 3a exists to close.
-  if ! grep -qxF "$id" "$ACCEPTED"; then
-    printf 'SKIPPED\t%s\n' "$id"
-    follow_up=1
-    continue
-  fi
+  # grep's own 1-vs-else partition: 1 = "not in the set", anything ABOVE 1 (the
+  # file vanished, an I/O error) is a machine fault. Reading a grep-2 as
+  # "already dropped" would silently skip every REMAINING id while leaving them
+  # in the accepted file -- neither merged nor reported.
+  grep -qxF "$id" "$ACCEPTED"
+  grc=$?
+  case "$grc" in
+    0) ;;
+    1)
+      printf 'SKIPPED\t%s\n' "$id"
+      follow_up=1
+      continue
+      ;;
+    *)
+      echo "GATE COULD NOT RUN: grep failed (exit $grc) re-checking '$id' in '$ACCEPTED'" >&2
+      echo "Reading this as 'already dropped' would silently skip the rest of the batch." >&2
+      exit 2
+      ;;
+  esac
 
   # See the header: the non-negated form is load-bearing. A command substitution
   # inside an `if` condition is also exempt from `set -e`, unlike a bare
@@ -97,7 +111,14 @@ for id in $ORDER; do
 
   case "$rc" in
     0)
-      printf '%s\n' "$id" >> "$LANDED"
+      # A failed append is a fault, not a shrug: Section 4 reads this file back
+      # to decide which tickets to close, so a silently dropped line leaves a
+      # merged branch's ticket open with nothing to say so.
+      printf '%s\n' "$id" >> "$LANDED" || {
+        echo "GATE COULD NOT RUN: could not append '$id' to landed file '$LANDED'" >&2
+        echo "This id IS merged onto the current checkout; the record of it is not." >&2
+        exit 2
+      }
       printf 'LANDED\t%s\n' "$id"
       ;;
     1)
@@ -108,13 +129,20 @@ for id in $ORDER; do
       # the FILE, before the loop reaches them.
       dropargs="$id --accepted $ACCEPTED"
       [ -n "$GRAPH" ] && dropargs="$dropargs --graph $GRAPH"
+      # Capture, don't pipe: a `drop | awk` pipeline reports awk's always-0
+      # status, so a drop-side machine fault (missing --accepted, an unreadable
+      # graph) would be swallowed and a conflicted branch silently left in the
+      # accepted set.
       # shellcheck disable=SC2086
-      if ! "$TOP/scripts/drop-from-accepted.sh" $dropargs \
-           | awk -F'\t' '$1 == "HELD" { print "HELD\t" $2 }'; then
+      if ! DROP_OUT=$("$TOP/scripts/drop-from-accepted.sh" $dropargs); then
         echo "GATE COULD NOT RUN: drop-from-accepted.sh failed for '$id'" >&2
         echo "The accepted set may be only partly reduced -- do not continue merging." >&2
         exit 2
       fi
+      while IFS=$'\t' read -r verb held_id; do
+        [ "$verb" = "HELD" ] || continue
+        printf 'HELD\t%s\n' "$held_id"
+      done <<< "$DROP_OUT"
       ;;
     *)
       # Never a branch verdict: do not bounce, do not kick back, stop the pass.

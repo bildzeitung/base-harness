@@ -133,6 +133,24 @@ Others that may prompt: `scp`/`ssh` (use `-o BatchMode=yes`), `apt-get` (`-y`), 
    mark it PENDING A HUMAN in your hand-off, and stop — I file it myself. Read-only external calls
    (`gh issue view`, `gh api` GET, `WebFetch`) and all internal tracker filing are unaffected. This
    binds the main session the same as every subagent.
+9. **Record mistakes in MISTAKES.md — autonomously, without waiting to be told.** Every agent, at
+   every stage of the workflow, acts on a qualifying mistake the moment it discovers one — it does
+   not wait for a human to notice or order the write. A stage that can write repo files **appends
+   the entry itself**; a stage that structurally cannot (see the write-path sentence below)
+   **reports it** so a stage that can files it. **Qualifying bar (stated once, here — every other
+   instruction file points back to this paragraph instead of restating it):** an entry is warranted
+   when the mistake destroyed or risked real work, or shipped a wrong artifact, **and** a concrete
+   prevention rule can be derived from it — not every bounced branch, red gate, or routine
+   escalation. Before appending, check MISTAKES.md for an existing entry describing the same root
+   cause / incident (grep for the incident, not just exact wording) — entries are append-only, so
+   two stages observing the same incident must not double-file. Each entry: what happened / root
+   cause / consequence / the rule that prevents a repeat. Newest first. Each workflow-stage
+   instruction file states its own write path (a stage working in a worktree appends and commits
+   normally; a stage that cannot write repo files — `land-review`, run in a disposable worktree
+   that never commits, and the tracker-only/dispatch-only stages `/sweep`, `/epic-audit`,
+   `challenge` and `/code` — reports the finding to whoever dispatched or reads it, and that stage
+   files it; `/land`, running on `main` in the main checkout, treats this file as a narrow,
+   explicit exception to its "report the patch, not the gap" rule).
 
 ## Memory & where project knowledge lives
 

@@ -1,6 +1,6 @@
 """scripts/land-replay.sh -- the resumable isolation replay, on real repos.
 
-The replay runs `2 + 3N` full gate sessions in a path that cannot be backgrounded
+The replay runs `3 + 3N` full gate sessions in a path that cannot be backgrounded
 and is capped at 600s per tool call. A straight-through loop hits that ceiling
 mid-attribution, so nothing is bounced and the next pass rebuilds the same set and
 reds again. These cases pin the properties that stop that:
@@ -49,6 +49,12 @@ def _repo(tmp_path: Path) -> Path:
     _git(repo, "config", "user.email", "t@t")
     _git(repo, "config", "user.name", "t")
     shutil.copytree(REPO_ROOT / "scripts", repo / "scripts")
+    # Test scaffolding (the copied scripts/, the gate stub, its baseline marker)
+    # is untracked in this throwaway clone; exclude it so the script's and the
+    # tests' clean-tree checks see only what a branch actually changed.
+    (repo / ".git" / "info" / "exclude").write_text(
+        "/scripts/\n/gate-stub.sh\n/.replay-baselined\n"
+    )
     return repo
 
 
@@ -247,3 +253,71 @@ def test_bad_invocation_is_a_machine_fault(tmp_path: Path) -> None:
     r = _replay(repo, st, _stub(repo), "--deadline-seconds", "not-a-number")
     assert r.returncode == 2
     assert "must be an integer" in r.stderr
+
+
+def test_a_mid_loop_gate_127_is_a_machine_fault_never_a_culprit(tmp_path: Path) -> None:
+    """Exit 1 is the only content verdict a gate has. A 127 (nox vanished from
+    PATH mid-run), 126, or 128+n is the machine, not the branch that happened to
+    be merged when it hit -- backing it out and reporting a CULPRIT would bounce
+    a perfectly good branch on a bootstrap gap."""
+    repo = _repo(tmp_path)
+    _land_branch(repo, "good", "good.txt", "g")
+    _land_branch(repo, "bad", "bad.txt", "b")
+    st = _state(repo, "good", "bad")
+    stub = repo / "gate-stub.sh"
+    stub.write_text(
+        '#!/usr/bin/env bash\nif [ -f bad.txt ] && [ "$1" = tests ]; then exit 127; fi\nexit 0\n'
+    )
+    stub.chmod(0o755)
+    r = _replay(repo, st, stub)
+    assert r.returncode == 2, f"{r.stdout}\n{r.stderr}"
+    assert ("CULPRIT", "bad") not in _records(r), "a 127 must never be read as a content red"
+    assert "machine fault" in r.stderr
+    assert st["landed"].read_text() == "good\n"
+
+
+def test_a_baseline_reformat_is_gate_could_not_run(tmp_path: Path) -> None:
+    """The fix session runs a formatter, so it can exit 0 while REFORMATTING the
+    bare base tree. Nothing in the accepted set is to blame either way; landing
+    anything on top of it would pollute every per-branch dirty-tree check."""
+    repo = _repo(tmp_path)
+    _land_branch(repo, "a", "a.txt", "a")
+    st = _state(repo, "a")
+    stub = repo / "gate-stub.sh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = fix ] && [ ! -f .fix-ran ]; then touch .fix-ran; echo dirty >> f.txt; fi\n'
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    r = _replay(repo, st, stub)
+    assert r.returncode == 2, f"{r.stdout}\n{r.stderr}"
+    assert "reformatted the bare base tree" in r.stderr
+    assert _records(r) == [], "a baseline reformat must not be attributed to any branch"
+
+
+def test_a_survivor_reformat_is_amended_into_the_merge_commit(tmp_path: Path) -> None:
+    """A green fix session may still reformat the just-merged branch's files.
+    Left loose, that dirties the tree for the NEXT iteration's `git merge`, which
+    most likely machine-faults against it -- so it is folded into the merge
+    commit before the loop continues."""
+    repo = _repo(tmp_path)
+    _land_branch(repo, "a", "a.txt", "raw\n")
+    _land_branch(repo, "b", "b.txt", "b")
+    st = _state(repo, "a", "b")
+    stub = repo / "gate-stub.sh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = fix ] && [ -f a.txt ]; then printf "formatted\\n" > a.txt; fi\n'
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    r = _replay(repo, st, stub)
+    assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
+    assert [rec for rec in _records(r) if rec[0] == "SURVIVOR"] == [
+        ("SURVIVOR", "a"),
+        ("SURVIVOR", "b"),
+    ]
+    assert (repo / "a.txt").read_text() == "formatted\n"
+    dirty = _git(repo, "status", "--porcelain")
+    assert dirty == "", f"the reformat was left loose in the tree: {dirty!r}"

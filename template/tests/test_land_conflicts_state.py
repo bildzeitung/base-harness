@@ -273,8 +273,29 @@ def test_kick_back_block_refuses_loudly_on_missing_or_empty_conflicts() -> None:
     )
 
 
+_SECTION_4_PUSH_MARK = "Heartbeat here so every per-ticket close"
+"""What distinguishes Section 4's push fence from the other `_PUSH` block.
+
+Content, not document position: the fence that pushes Section 3's merge output
+is the one that goes on to heartbeat and drain the per-ticket close work. A
+positional tiebreak (`min(push_indices)`) would keep passing while silently
+pinning the WRONG fence if SKILL.md were ever reorganized so "Stop and report"
+sat above Section 4 -- the same first-of-several-near-identical-blocks hazard
+`_only_block_with` exists to refuse.
+"""
+
+
 def _regate_and_push_indices(blocks: list[str]) -> tuple[list[int], int]:
-    """Document-order positions of the re-gate blocks and the push block.
+    """Document-order positions of the re-gate blocks and Section 4's push
+    block -- the latter identified by CONTENT (`_SECTION_4_PUSH_MARK`).
+
+    There is a SECOND `git push origin main` fence, in "Stop and report"'s own
+    MISTAKES.md entry point -- it fires only on a pass that never reaches
+    Section 3/4 at all (nothing merged, so nothing to gate), and pushes only a
+    MISTAKES.md doc commit, never Section 3's merge output. It is deliberately
+    excluded from THIS pin, which is about Section 4's merge-output push
+    specifically -- the one this test's whole premise (`origin/main` only
+    advances to already-gated content) is about.
 
     Also polices the structural assumption itself, so a SKILL.md reshape that
     adds or drops one of these blocks fails loudly here rather than silently
@@ -288,12 +309,21 @@ def _regate_and_push_indices(blocks: list[str]) -> tuple[list[int], int]:
         f"{len(regate_indices)} -- this test's assumption about SKILL.md's "
         "structure has drifted; re-check by hand before adjusting the count"
     )
-    assert len(push_indices) == 1, (
-        f"expected exactly 1 fenced block running `{_PUSH}`, found "
-        f"{len(push_indices)} -- this test's assumption about SKILL.md's "
-        "structure has drifted; re-check by hand before adjusting the count"
+    assert len(push_indices) == 2, (
+        f"expected exactly 2 fenced blocks running `{_PUSH}` (Section 4's "
+        f"merge-output push + Stop and report's no-accepted-set MISTAKES.md "
+        f"push), found {len(push_indices)} -- this test's assumption about "
+        "SKILL.md's structure has drifted; re-check by hand before adjusting "
+        "the count"
     )
-    return regate_indices, push_indices[0]
+    section_4 = [i for i in push_indices if _SECTION_4_PUSH_MARK in blocks[i]]
+    assert len(section_4) == 1, (
+        f"expected exactly 1 of the {len(push_indices)} `{_PUSH}` blocks to "
+        f"carry `{_SECTION_4_PUSH_MARK}` (Section 4's merge-output push), "
+        f"found {len(section_4)} -- this test's assumption about SKILL.md's "
+        "structure has drifted; re-check by hand before adjusting the needle"
+    )
+    return regate_indices, section_4[0]
 
 
 def _regate_precedes_push(blocks: list[str]) -> bool:
@@ -368,4 +398,69 @@ def test_section_3_regate_precedes_push_is_sabotage_proven() -> None:
     assert not _regate_precedes_push(sabotaged), (
         "sabotage (hoisting the push above Section 3's re-gate) did not make "
         "`_regate_precedes_push()` return False -- the real pin is vacuous"
+    )
+
+
+def _commands(block: str) -> list[str]:
+    """A fenced block's command lines, comments and indentation stripped.
+
+    The two MISTAKES.md filing sites annotate the same commands with
+    site-specific trailing comments ("same reason as Section 4's copy" vs the
+    original rationale); the pin below is about the COMMANDS staying identical,
+    not the prose around them.
+    """
+    out = []
+    for raw in block.splitlines():
+        line = raw.split("#", 1)[0].strip() if not raw.strip().startswith("#") else ""
+        if line:
+            out.append(line)
+    return out
+
+
+def test_both_mistakes_md_filing_sites_run_identical_commands() -> None:
+    """`/land`'s MISTAKES.md filing block exists at two entry points (Section
+    4's, for a pass that lands something; "Stop and report"'s, for a pass with
+    no accepted set at all). SKILL.md is prose an agent reads, and each entry
+    point has to stand alone, so the duplication is deliberate -- but nothing
+    otherwise stops the two copies from silently diverging when the dedup rule
+    or the commit shape next changes.
+
+    Same remedy the `land-merge-batch.sh`/`land-replay.sh` idioms got: leave
+    the duplication, pin it byte-identical (commands only -- see `_commands`).
+    The append/commit fence is what carries the drift risk; the trailing
+    `git push origin main` is genuinely unique to the Stop-and-report copy and
+    deliberately outside this pin's scope.
+    """
+    blocks = _skill_blocks()
+    filing = [_commands(b) for b in blocks if "git add MISTAKES.md" in b]
+    assert len(filing) == 2, (
+        f"expected exactly 2 MISTAKES.md filing fences (Section 4's + Stop and "
+        f"report's), found {len(filing)} -- re-check by hand before adjusting "
+        "the count"
+    )
+    assert filing[0] == filing[1], (
+        "the two MISTAKES.md filing fences have drifted apart:\n"
+        f"  Section 4:       {filing[0]}\n"
+        f"  Stop and report: {filing[1]}\n"
+        "keep them command-identical, or collapse them to one block"
+    )
+
+
+def test_both_mistakes_md_filing_sites_share_one_dedup_grep() -> None:
+    """The dedup grep is the load-bearing half of the "grep for the incident,
+    not just exact wording" rule -- if one copy keeps a single fixed phrase
+    while the other alternates candidates, one entry point double-files.
+    Pinned separately from the fence above because the grep lives in its own
+    fence at both sites.
+    """
+    blocks = _skill_blocks()
+    greps = {
+        line
+        for b in blocks
+        for line in _commands(b)
+        if line.startswith("grep") and "MISTAKES.md" in line
+    }
+    assert len(greps) == 1, (
+        f"expected both MISTAKES.md dedup greps to be the same command, found "
+        f"{len(greps)} distinct: {sorted(greps)}"
     )

@@ -98,6 +98,7 @@ import threading
 import time
 from pathlib import Path
 
+import conftest
 import pytest
 from _gitrepo import _git
 from conftest import (
@@ -1531,7 +1532,10 @@ def test_land_skill_heartbeats_the_lock_once_per_ticket_in_section_2a() -> None:
     """
     text = LAND_SKILL_TEXT
 
-    assert "scripts/land-heartbeat.sh" in text, (
+    # NOT a bare `"scripts/land-heartbeat.sh" in text`: that also matches the
+    # two `--release` lines, so the pin would stay green with every real
+    # heartbeat call site deleted. Match the script NOT followed by --release.
+    assert re.search(r"scripts/land-heartbeat\.sh(?!\s*--release)", text), (
         "land/SKILL.md never heartbeats the single-lander lock -- the TTL is "
         "back to measuring acquisition age, not idle time (proj-m87j)"
     )
@@ -1566,8 +1570,14 @@ def test_land_skill_heartbeats_at_both_new_boundary_call_sites() -> None:
 
     positions = [
         m.start()
+        # Line-anchored so a backticked prose mention cannot pad the count, but
+        # NOT anchored at the line END: `|| true` is exactly the best-effort
+        # spelling the surrounding prose describes, and an indented call site
+        # (inside the Red branch's nested fence) is equally legitimate. The
+        # `--release` lookahead keeps the two release sites out of a HEARTBEAT
+        # count.
         for m in re.finditer(
-            r'^scripts/land-heartbeat\.sh$', text, re.MULTILINE
+            r"^[ \t]*scripts/land-heartbeat\.sh(?!\s*--release)", text, re.MULTILINE
         )
     ]
     assert len(positions) == 3, (
@@ -1614,14 +1624,18 @@ _BLIND_OK = "land-lock-blind-ok"
 
 def test_land_skill_persists_its_own_acquire_token_for_later_blocks() -> None:
     """Section 0 must capture `acquire`'s printed token and write it to
-    `$(git rev-parse --git-dir)/land-lock-token` -- deliberately OUTSIDE
-    `$STATE_DIR` (proj-l7mj): Section 1's `rm -rf "$STATE_DIR"` would otherwise
-    destroy it before any consumer reads it (it did, in production, on every
-    pass -- see the mechanical execution test below). Nothing else can carry
-    the token forward: no shell state survives to the later, separate Bash
-    invocations that heartbeat and release (proj-sfnb), so if this write is
-    lost every later call site reads an empty token and silently degrades to
-    the blind, pre-proj-q9pm behaviour."""
+    `$(git rev-parse --path-format=absolute --git-common-dir)/land-lock-token`
+    -- deliberately OUTSIDE `$STATE_DIR` (proj-l7mj): Section 1's
+    `rm -rf "$STATE_DIR"` would otherwise destroy it before any consumer
+    reads it (it did, in production, on every pass -- see the mechanical
+    execution test below). Nothing else can carry the token forward: no
+    shell state survives to the later, separate Bash invocations that
+    heartbeat and release (proj-sfnb), so if this write is lost every later
+    call site reads an empty token and silently degrades to the blind,
+    pre-proj-q9pm behaviour. `--path-format=absolute --git-common-dir`, not
+    bare `--git-dir`, is required as of proj-k6h0: bare `--git-dir` is
+    worktree-PRIVATE, so a linked worktree's write would orphan the token
+    the shared reader (scripts/land-heartbeat.sh) looks for."""
     executed = LAND_SKILL_BASH
 
     # Match the WRITE specifically, not a bare mention of the filename: the
@@ -1629,11 +1643,15 @@ def test_land_skill_persists_its_own_acquire_token_for_later_blocks() -> None:
     # check stays green with the write itself deleted (measured by sabotage --
     # it did).
     assert re.search(
-        r'>\s*"\$\(git rev-parse --git-dir\)/land-lock-token"', executed
+        r">\s*\"\$\(git rev-parse --path-format=absolute --git-common-dir\)"
+        r'/land-lock-token"',
+        executed,
     ), (
-        "land/SKILL.md never WRITES $(git rev-parse --git-dir)/land-lock-token"
-        " -- every later heartbeat/release then reads an empty token and the "
-        "proj-q9pm ownership check is silently disabled for the whole pass"
+        "land/SKILL.md never WRITES $(git rev-parse --path-format=absolute "
+        "--git-common-dir)/land-lock-token -- every later heartbeat/release "
+        "then reads an empty token and the proj-q9pm ownership check is "
+        "silently disabled for the whole pass (or, from a linked worktree, "
+        "orphaned entirely -- proj-k6h0)"
     )
     assert '"$STATE_DIR/land-lock-token"' not in executed, (
         "land/SKILL.md still writes or reads the token under $STATE_DIR -- "
@@ -1673,7 +1691,8 @@ def test_every_land_lock_heartbeat_and_release_call_site_supplies_its_own_token(
         f"{offenders}. Since proj-yuwt land-lock.sh refuses such a call outright "
         "(exit 2), so the call site does not degrade to the pre-proj-q9pm blind "
         'behaviour -- it stops working. Pass `"$MY_TOKEN"` (re-read from '
-        f"$(git rev-parse --git-dir)/land-lock-token in that same block), or -- "
+        f"$(git rev-parse --path-format=absolute --git-common-dir)"
+        f"/land-lock-token in that same block), or -- "
         f"only if it genuinely has no token to supply -- mark the line "
         f"`{_BLIND_OK}` with a reason AND pass the explicit `{BLIND}` sentinel."
     )
@@ -1794,7 +1813,8 @@ def test_land_skill_never_reintroduces_an_inline_lock() -> None:
         "the acquire call is not inside an executable ```bash fence -- "
         "_fenced_bash() or the skill's layout has drifted"
     )
-    assert "land-heartbeat.sh" in executed, (
+    # Same `--release` exclusion as the pin above, for the same reason.
+    assert re.search(r"land-heartbeat\.sh(?!\s*--release)", executed), (
         "the heartbeat call (Section 2a) is not inside an executable ```bash "
         "fence -- test_land_skill_heartbeats_the_lock_once_per_ticket_in_"
         "section_2a found it in the file's prose but not where it is actually "
@@ -1813,7 +1833,8 @@ def test_land_skill_never_reintroduces_an_inline_lock() -> None:
 
 def test_every_own_token_readback_site_warns_when_empty() -> None:
     """proj-67nk: land/SKILL.md's own-token READ-BACK sites (every place that
-    does `MY_TOKEN="$(cat "$(git rev-parse --git-dir)/land-lock-token" ...)"`)
+    does `MY_TOKEN="$(cat "$(git rev-parse --path-format=absolute
+    --git-common-dir)/land-lock-token" ...)"`)
     must each be followed by a loud, non-fatal stderr diagnostic when the read
     comes back empty, rather than silently proceeding blind. `land-lock.sh`
     treats an empty own-token argument EXACTLY as an absent one, so a
@@ -1840,20 +1861,24 @@ def test_every_own_token_readback_site_warns_when_empty() -> None:
     (this ticket's acceptance criteria name it as off limits)."""
     executed = LAND_SKILL_BASH
 
-    token_reads = executed.count('cat "$(git rev-parse --git-dir)/land-lock-token"')
+    token_reads = executed.count(
+        'cat "$(git rev-parse --path-format=absolute --git-common-dir)/land-lock-token"'
+    )
     assert token_reads == 2, (
-        f"expected exactly 2 reads of $(git rev-parse --git-dir)/land-lock-token"
-        f" in land/SKILL.md (Section 1's release, the gap (a) boundary heartbeat "
-        f"before Section 1a [proj-v4sv], Section 2a's per-ticket heartbeat, "
-        f"Section 3's two merge loops, the gap (c) boundary heartbeat at the top "
-        f"of Section 4 [proj-v4sv], Section 4's final release), found "
+        f"expected exactly 2 reads of $(git rev-parse --path-format=absolute"
+        f" --git-common-dir)/land-lock-token"
+        f" in land/SKILL.md -- Section 3's two merge script call sites, the only "
+        f"remaining places that need $MY_TOKEN read back from disk to forward it "
+        f"via --own-token to land-merge-batch.sh/land-replay.sh (every OTHER "
+        f"former read-back site now runs scripts/land-heartbeat.sh, which "
+        f"re-derives the token itself and no longer needs it threaded in), found "
         f"{token_reads} -- if a call site was genuinely added or removed, "
         "update this pin's count deliberately and check the new/removed site "
         "got (or lost) its own proj-67nk diagnostic too"
     )
 
     warning_sites = executed.count("DISABLED for this call ")
-    assert warning_sites >= 0, (
+    assert warning_sites == token_reads, (
         f"found {token_reads} own-token read-back sites but only "
         f"{warning_sites} carry the 'no own-token available' "
         "warning -- every read-back site must warn when the token comes "
@@ -1894,7 +1919,8 @@ def test_land_merge_one_warns_on_an_empty_own_token_argument() -> None:
 # model) against a real throwaway "main checkout", then read the token back
 # exactly as Section 2a does. The three textual pins above (updated for the
 # new path) are blind to this bug BY CONSTRUCTION: they prove a line is
-# spelled "$(git rev-parse --git-dir)/land-lock-token" in the shipped file,
+# spelled "$(git rev-parse --path-format=absolute --git-common-dir)/
+# land-lock-token" in the shipped file,
 # never that the WIPE positioned between the write and every read-back site
 # leaves that file intact at run time. Only running the real fences catches
 # that -- which is exactly how this bug shipped past the three textual pins
@@ -1995,7 +2021,8 @@ def test_section_0_then_section_1_leaves_the_token_readable_by_section_2a(
     touches, so it survives.
 
     Reads the token back the same way Section 2a's own fence does: `cat
-    "$(git rev-parse --git-dir)/land-lock-token"`, run as a THIRD, separate
+    "$(git rev-parse --path-format=absolute --git-common-dir)/land-lock-token"`,
+    run as a THIRD, separate
     Bash invocation -- not a Python-side file read -- so this pin exercises
     the exact mechanism a real pass relies on, not merely the file's final
     state on disk."""
@@ -2015,7 +2042,9 @@ def test_section_0_then_section_1_leaves_the_token_readable_by_section_2a(
     )
 
     readback = _run_block(
-        'cat "$(git rev-parse --git-dir)/land-lock-token"', repo, bin_dir
+        'cat "$(git rev-parse --path-format=absolute --git-common-dir)/land-lock-token"',
+        repo,
+        bin_dir,
     )
     assert readback.returncode == 0 and readback.stdout.strip(), (
         "Section 2a's own token read-back came back empty after Section 0 "

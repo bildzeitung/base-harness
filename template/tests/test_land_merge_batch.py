@@ -175,3 +175,19 @@ def test_missing_accepted_file_is_a_fault_not_an_empty_set(tmp_path: Path) -> No
     r = _batch(repo, st)
     assert r.returncode == 2
     assert "does not exist" in r.stderr
+
+
+def test_a_drop_side_fault_stops_the_pass_instead_of_being_swallowed(tmp_path: Path) -> None:
+    """The reduction used to run as `drop-from-accepted.sh | awk`, whose status
+    is awk's (always 0) -- a drop-side machine fault was swallowed and the
+    conflicted branch's dependents were silently left in the accepted set. The
+    drop's output is captured and its own status checked now."""
+    repo = _repo(tmp_path)
+    _land_branch(repo, "a", "f.txt", "from a\n")
+    _land_branch(repo, "base", "f.txt", "from base\n")   # conflicts with a
+    st = _state(repo, "a", "base")
+    sabotaged = repo / "scripts" / "drop-from-accepted.sh"
+    sabotaged.write_text("#!/usr/bin/env bash\necho boom >&2\nexit 2\n")
+    r = _batch(repo, st)
+    assert r.returncode == 2, f"{r.stdout}\n{r.stderr}"
+    assert "drop-from-accepted.sh failed" in r.stderr

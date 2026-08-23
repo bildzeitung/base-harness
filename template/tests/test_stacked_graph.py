@@ -75,7 +75,10 @@ def _publish(repo: Path, *branches: str) -> None:
 def _run(repo: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT), "--base-ref", "origin/main", *extra],
-        cwd=repo, capture_output=True, text=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -131,14 +134,16 @@ def test_stack_survives_the_base_tip_moving_afterwards(tmp_path: Path) -> None:
     _commit(repo, "dep_work")
     _git(repo, "merge", "-q", "--no-ff", "-m", "merge base", "land/base")
     _branch(repo, "land/base", "land/base")
-    _commit(repo, "base_review_fix")          # the base tip moves
+    _commit(repo, "base_review_fix")  # the base tip moves
     _publish(repo, "land/base", "land/dep")
 
     # Precondition: the naive tip test really does fail here, so this fixture
     # is exercising what it claims to.
     naive = subprocess.run(
         ["git", "merge-base", "--is-ancestor", "origin/land/base", "origin/land/dep"],
-        cwd=repo, capture_output=True,
+        cwd=repo,
+        capture_output=True,
+        check=False,
     )
     assert naive.returncode != 0, "fixture no longer reproduces the moved-tip case"
 
@@ -208,7 +213,9 @@ def test_transitive_stack_marks_only_the_nearest_base_direct(tmp_path: Path) -> 
     edges = _edges(_run(repo))
     assert ("b", "a", "direct") in edges
     assert ("c", "b", "direct") in edges
-    assert ("c", "a", "transitive") in edges, "full relation must still contain the transitive edge"
+    assert ("c", "a", "transitive") in edges, (
+        "full relation must still contain the transitive edge"
+    )
     assert ("c", "a", "direct") not in edges
 
 
@@ -219,7 +226,7 @@ def test_branched_from_base_is_reported_unordered_not_guessed(tmp_path: Path) ->
     repo = _repo(tmp_path)
     _branch(repo, "land/base", "origin/main")
     _commit(repo, "base_work")
-    _branch(repo, "land/dep", "land/base")     # branched off, not merged in
+    _branch(repo, "land/dep", "land/base")  # branched off, not merged in
     _commit(repo, "dep_work")
     _publish(repo, "land/base", "land/dep")
 
@@ -227,6 +234,30 @@ def test_branched_from_base_is_reported_unordered_not_guessed(tmp_path: Path) ->
     assert r.returncode == 0, r.stderr
     assert _edges(r) == set(), "no direction may be invented for this shape"
     assert "UNORDERED\tbase\tdep" in r.stdout
+
+
+def test_directed_stack_is_never_also_reported_unordered(tmp_path: Path) -> None:
+    """Direction is only found in the ordering that puts the BASE first, but
+    UNORDERED pairs are collected in the x < y ordering. When the base's id
+    sorts AFTER the dependent's, those two orderings differ, and a genuinely
+    stacked pair used to be emitted as an EDGE *and* as UNORDERED -- a false
+    ambiguity on roughly half of all real stacks, since ids sort arbitrarily.
+
+    Every other case in this file happens to name its base so it sorts first,
+    which is exactly why this went unnoticed; here the base is `land/zzz`.
+    """
+    repo = _repo(tmp_path)
+    _branch(repo, "land/zzz", "origin/main")
+    _commit(repo, "zzz_work")
+    _branch(repo, "land/aaa", "origin/main")
+    _commit(repo, "aaa_work")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge zzz", "land/zzz")
+    _publish(repo, "land/zzz", "land/aaa")
+
+    r = _run(repo, "--report-unordered")
+    assert r.returncode == 0, r.stderr
+    assert _edges(r) == {("aaa", "zzz", "direct")}
+    assert "UNORDERED" not in r.stdout, r.stdout
 
 
 @pytest.mark.parametrize(
@@ -242,7 +273,13 @@ def test_machine_faults_exit_2_and_never_read_as_no_stacks(
     """A query that could not run must not be indistinguishable from 'no stacks'
     -- that conflation is what would let /land merge a dependent before its base."""
     repo = _repo(tmp_path)
-    r = subprocess.run(["bash", str(SCRIPT), *args], cwd=repo, capture_output=True, text=True)
+    r = subprocess.run(
+        ["bash", str(SCRIPT), *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert r.returncode == 2, r.stdout
     assert needle in r.stderr
     assert r.stdout == ""

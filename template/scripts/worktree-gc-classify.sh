@@ -141,21 +141,22 @@ fi
 # (scripts/discard-beads-passive-export-churn.sh), this is a gate, and an empty
 # exclude list would silently INVERT an earlier fix -- passive-export churn would read
 # as "dirty" and zero out the sweep with nothing red.
-_BEADS_EXPORTS_LIST="$SCRIPT_DIR/beads-passive-exports.txt"
-if [ ! -r "$_BEADS_EXPORTS_LIST" ]; then
-  echo "$0: cannot read $_BEADS_EXPORTS_LIST" >&2
+#
+# The load+validate+":(exclude)" transform itself is owned by the
+# sourced helper scripts/beads-passive-exports.sh (this script keeps its own
+# fail-loud exit-2 semantics on top of the helper's plain return code).
+# shellcheck source=beads-passive-exports.sh
+if ! . "$SCRIPT_DIR/beads-passive-exports.sh"; then
+  echo "$0: cannot source $SCRIPT_DIR/beads-passive-exports.sh" >&2
   exit 2
 fi
-mapfile -t _BEADS_EXPORTS < "$_BEADS_EXPORTS_LIST"
-if [ "${#_BEADS_EXPORTS[@]}" -eq 0 ] || printf '%s\n' "${_BEADS_EXPORTS[@]}" | grep -qx ''; then
-  echo "$0: $_BEADS_EXPORTS_LIST is empty or contains a blank line" >&2
+if ! load_beads_passive_exports "$SCRIPT_DIR/beads-passive-exports.txt"; then
   exit 2
 fi
-_BEADS_EXCLUDE_PATHSPECS=("${_BEADS_EXPORTS[@]/#/:(exclude)}")
 
 wt_provably_clean() {
   local st
-  st=$(git -C "$1" status --porcelain -- . "${_BEADS_EXCLUDE_PATHSPECS[@]}" 2>&1) && [ -z "$st" ]
+  st=$(git -C "$1" status --porcelain -- . "${BEADS_PASSIVE_EXPORTS_EXCLUDE_PATHSPECS[@]}" 2>&1) && [ -z "$st" ]
 }
 
 # WIDENED PREDICATE: "merged into main" is a PROXY for "this
@@ -203,14 +204,34 @@ case "$br" in
     # is kept either way, so no commit is ever lost).
     last_commit_ts=$(git -C "$wt" log -1 --format=%ct 2>/dev/null) || last_commit_ts=""
     now=$(date +%s)
-    if [ -n "$last_commit_ts" ] && [ $((now - last_commit_ts)) -ge "$min_age_seconds" ]; then
-      if wt_provably_clean "$wt"; then
-        echo "dir-only"
-      else
-        echo "keep-dirty"
-      fi
+    if [ -z "$last_commit_ts" ]; then
+      echo "keep-notmerged"    # commit ts unreadable -- fail safe, keep
     else
-      echo "keep-notmerged"    # too young (or commit ts unreadable) -- fail safe, keep
+      # CLAMP A NEGATIVE AGE TO 0: `now` and the committer
+      # timestamp are two whole-second reads of the same wall clock, so the
+      # difference goes negative if that clock steps BACKWARD between them (an
+      # NTP correction; or a CPU-saturated guest VM catching up after being
+      # descheduled -- the suspected cause of this arm's flake under `-n 8`).
+      # Unclamped, `-ge` then fails even against a $min_age_seconds of 0 --
+      # the "no floor at all" setting -- turning a routine commit into a
+      # spurious keep-notmerged. A commit whose apparent age reads negative
+      # is, for classification purposes, one that just happened. Only that
+      # zero case changes behavior: against any wider floor an unclamped
+      # negative and a clamped 0 both read as too young, so the production
+      # default (21600s) still keeps a clock-skewed commit.
+      age=$((now - last_commit_ts))
+      if [ "$age" -lt 0 ]; then
+        age=0
+      fi
+      if [ "$age" -ge "$min_age_seconds" ]; then
+        if wt_provably_clean "$wt"; then
+          echo "dir-only"
+        else
+          echo "keep-dirty"
+        fi
+      else
+        echo "keep-notmerged"    # too young -- fail safe, keep
+      fi
     fi
     ;;
   *)

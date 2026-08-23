@@ -13,11 +13,14 @@ agent actually executes". Several gates below key on it, so a change to
 from __future__ import annotations
 
 import functools
+import importlib.util
 import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -26,6 +29,56 @@ from _fence_parsing import closes_fence, match_fence_marker
 #: Repo root -- tests/ lives directly under it.
 _CHECKOUT_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = _CHECKOUT_ROOT
+
+
+def load_module_from_path(name: str, path: Path) -> ModuleType:
+    """Load the script/module at ``path`` under module name ``name``.
+
+    Registers the module in ``sys.modules`` before executing it. That is
+    load-bearing, not defensive: a module defining a dataclass fails outright
+    without it, because ``dataclasses`` looks the class's own module up via
+    ``sys.modules`` during class creation. scripts/check_links.py has a frozen
+    ``@dataclass`` and dies with ``AttributeError: 'NoneType' object has no
+    attribute '__dict__'`` if it is executed unregistered.
+
+    The registration is permanent for the session -- nothing evicts it -- so
+    ``name`` must not be a name anything else imports: a hypothetical
+    scripts/build.py loaded as ``"build"`` would displace the real ``build``
+    distribution for every later test in that worker. The assert below does
+    NOT catch that; the module being displaced is typically not yet resident
+    when the load happens. It catches the collision that always *is*
+    detectable -- loading the same name a second time -- which is a genuine
+    hazard for any caller whose module has import-time side effects.
+    """
+    assert name not in sys.modules, (
+        f"{name!r} is already in sys.modules -- loading {path} under that "
+        f"name would replace it for the rest of the session"
+    )
+    spec = importlib.util.spec_from_file_location(name, path)
+    # Type-narrowing only, not a real failure mode: spec_from_file_location
+    # returns None only when no loader claims the suffix, which cannot happen
+    # for the .py paths this is called with.
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the harness's custom markers.
+
+    Registered here (the template ships no pytest.ini/pyproject config of its
+    own) so `--strict-markers`, if the host project enables it, does not turn
+    the marker into a collection error.
+    """
+    config.addinivalue_line(
+        "markers",
+        "serial: this test asserts a wall-clock budget, so it must not share the machine with "
+        "sibling pytest-xdist workers. `nox -s tests` runs the suite as `-m 'not serial'` under "
+        "xdist and then re-invokes pytest as `-m serial -n 0`, so every test still runs exactly "
+        "once.",
+    )
 
 # today's corpus, measured, but not in general -- a `>>`-leading line double-strips to a
 # bare one -- and nothing strips twice any more. (tests/test_land_lock.py's independent
@@ -222,7 +275,7 @@ def fake_bin_env(bin_dir: Path) -> dict[str, str]:
 
 
 def run_block(
-    block: str, sweep_tmp: Path, bin_dir: Path
+    block: str, sweep_tmp: Path, bin_dir: Path, *, cwd: Path
 ) -> subprocess.CompletedProcess[str]:
     """Run one fenced ```bash block as its own, fresh subprocess.
 
@@ -238,8 +291,16 @@ def run_block(
     derivation lands exactly on the ``sweep_tmp`` fixture's directory -- that
     derivation is ``/sweep``'s §0 convention SPECIFICALLY, so a caller testing
     a different skill's blocks inherits a redirection it did not ask for.
-    ``cwd`` is the checkout root (:data:`_CHECKOUT_ROOT`, worktree-aware)
-    rather than a hand-rolled ``Path(__file__).parent.parent`` in each caller.
+
+    ``cwd`` is REQUIRED, keyword-only, and has no default -- it used to
+    default silently to :data:`_CHECKOUT_ROOT`, the live checkout. Every
+    existing caller only ever hands this function /sweep's read-only fences,
+    so passing ``cwd=_CHECKOUT_ROOT`` there is fine and stays explicit at
+    the call site; the point of removing the default is that a future caller
+    handing this a destructive fence (a /land or /code section) is now
+    forced to make its own cwd choice instead of silently inheriting the
+    live checkout -- a defect class this suite has hit for real (see
+    tests/test_gate_lib.py's `_run_script` docstring).
     """
     env = dict(fake_bin_env(bin_dir), TMPDIR=str(sweep_tmp.parent))
     return subprocess.run(
@@ -247,7 +308,7 @@ def run_block(
         capture_output=True,
         text=True,
         env=env,
-        cwd=_CHECKOUT_ROOT,
+        cwd=cwd,
         check=False,
     )
 

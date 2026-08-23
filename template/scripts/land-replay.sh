@@ -3,8 +3,8 @@
 # /land's isolation replay: on a RED combined re-gate, replay the accepted set
 # one branch at a time, re-gating after each, to attribute the red to a branch.
 #
-# RESUMABLE BY DESIGN. Per branch this runs three gate sessions, plus two
-# baseline runs before the loop -- `2 + 3N` full gate invocations. A single Bash
+# RESUMABLE BY DESIGN. Per branch this runs three gate sessions, plus three
+# baseline runs before the loop -- `3 + 3N` full gate invocations. A single Bash
 # tool call is capped at 600s and the harness forbids backgrounding a gate, so a
 # straight-through loop hits that ceiling at a modest queue size, mid-loop. The
 # consequence is not merely a failed pass: nothing gets attributed, so nothing is
@@ -47,6 +47,21 @@ set -u
 
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || TOP=""
 [ -n "$TOP" ] || { echo "GATE COULD NOT RUN: not inside a git repository" >&2; exit 2; }
+
+# The canonical passive-export exclude list, via the sourced helper -- never a
+# hardcoded pathspec: excluding all of `.beads/` wholesale would hide a real
+# non-passive `.beads/` change (e.g. config.yaml) from every dirty-tree check
+# below. Guarded source: a missing helper must fail CLOSED, not leave
+# `load_beads_passive_exports` undefined for the first call site to trip over.
+# shellcheck source=beads-passive-exports.sh
+if ! . "$TOP/scripts/beads-passive-exports.sh"; then
+  echo "GATE COULD NOT RUN: cannot source $TOP/scripts/beads-passive-exports.sh" >&2
+  exit 2
+fi
+if ! load_beads_passive_exports "$TOP/scripts/beads-passive-exports.txt"; then
+  echo "GATE COULD NOT RUN: the beads passive-export list is missing or malformed" >&2
+  exit 2
+fi
 
 ACCEPTED=""; LANDED=""; MSG_DIR=""; CONFLICTS_DIR=""; STATE=""; GRAPH=""; OWN_TOKEN=""
 BASE_REF="origin/main"
@@ -132,6 +147,28 @@ if [ "$(state_get baselined)" != "1" ]; then
   # in the landing shell, set nowhere in the repo, once reddened the suite on a
   # bare ref with nothing merged; trusting it would have closed an innocent
   # ticket and deleted a reviewed branch.
+  # Baseline `fix` needs TWO checks, not one: the session runs a formatter, so
+  # it can exit 0 while REFORMATTING the bare base tree. Either way -- red, or
+  # green-but-dirty -- nothing in the accepted set is to blame, and every
+  # per-branch dirty-tree comparison below would be polluted; land nothing.
+  run_gate fix; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "GATE COULD NOT RUN: the fix session is red on bare $BASE_REF, before any branch merged." >&2
+    echo "Not attributable to anything in the accepted set; $BASE_REF itself needs a" >&2
+    echo "human's fix. Land nothing." >&2
+    exit 2
+  fi
+  # Tracked modifications only (`git diff`, not `git status`): an untracked
+  # file beside the checkout (a caller's stub, scratch output) is not a
+  # formatter reformat and must not read as one.
+  base_reformat="$(git diff --name-only -- . "${BEADS_PASSIVE_EXPORTS_EXCLUDE_PATHSPECS[@]}")"
+  if [ -n "$base_reformat" ]; then
+    echo "GATE COULD NOT RUN: the fix session reformatted the bare base tree at $BASE_REF" >&2
+    echo "(exit 0, but the tree is dirty). The formatter's output is not committed on the" >&2
+    echo "base ref; commit it there directly. Land nothing." >&2
+    exit 2
+  fi
+
   b0="$(date +%s)"
   run_gate tests; rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -168,8 +205,21 @@ for id in $(cat "$ACCEPTED"); do
   is_done "$id" && continue
   # Membership is re-checked every iteration: an earlier conflict may have taken
   # this branch out of the set, and merging it anyway lands a departed base's
-  # content under this ticket's name.
-  grep -qxF "$id" "$ACCEPTED" || continue
+  # content under this ticket's name. grep's own 1-vs-else partition: 1 = "not
+  # in the set", anything ABOVE 1 (the file vanished, an I/O error) is a machine
+  # fault -- reading it as "already dropped" would silently skip every remaining
+  # id while leaving them in the accepted file.
+  grep -qxF "$id" "$ACCEPTED"
+  grc=$?
+  case "$grc" in
+    0) ;;
+    1) continue ;;
+    *)
+      echo "GATE COULD NOT RUN: grep failed (exit $grc) re-checking '$id' in '$ACCEPTED'" >&2
+      echo "Reading this as 'already dropped' would silently skip the rest of the replay." >&2
+      exit 2
+      ;;
+  esac
 
   # Deadline: never START work whose gates are predicted to cross it. Three gate
   # sessions per branch, so budget 3 * EST.
@@ -196,10 +246,17 @@ for id in $(cat "$ACCEPTED"); do
       mark_done "$id"
       dropargs="$id --accepted $ACCEPTED"
       [ -n "$GRAPH" ] && dropargs="$dropargs --graph $GRAPH"
+      # Capture, don't pipe: a `drop | awk` pipeline reports awk's always-0
+      # status, so a drop-side machine fault would be swallowed and a
+      # conflicted branch silently left in the accepted set.
       # shellcheck disable=SC2086
-      "$TOP/scripts/drop-from-accepted.sh" $dropargs \
-        | awk -F'\t' '$1 == "HELD" { print "HELD\t" $2 }' || {
-          echo "GATE COULD NOT RUN: drop-from-accepted.sh failed for '$id'" >&2; exit 2; }
+      if ! DROP_OUT=$("$TOP/scripts/drop-from-accepted.sh" $dropargs); then
+        echo "GATE COULD NOT RUN: drop-from-accepted.sh failed for '$id'" >&2; exit 2
+      fi
+      while IFS=$'\t' read -r verb held_id; do
+        [ "$verb" = "HELD" ] || continue
+        printf 'HELD\t%s\n' "$held_id"
+      done <<< "$DROP_OUT"
       continue
       ;;
     *)
@@ -215,11 +272,39 @@ for id in $(cat "$ACCEPTED"); do
   EST=$(( $(date +%s) - g0 )); [ "$EST" -lt 5 ] && EST=5
   state_set est "$EST"
 
-  if [ "$fix_rc" -ne 0 ] || [ "$tests_rc" -ne 0 ]; then
+  # Exit 1 is the ONLY content verdict a gate has. Anything else nonzero --
+  # 127 (nox vanished from PATH mid-run), 126, 128+n (killed by a signal) --
+  # is the MACHINE, not this branch: stop the whole replay rather than back
+  # out and bounce an innocent branch on a bootstrap gap. The merge is left in
+  # place because its fate is unknown, not judged.
+  for rc in "$fix_rc" "$tests_rc"; do
+    case "$rc" in
+      0|1) ;;
+      *)
+        echo "GATE COULD NOT RUN: a gate exited $rc on '$id' -- exit 1 is the only content" >&2
+        echo "verdict; a 127/126/signal here is a machine fault, never a CULPRIT. Stopping." >&2
+        exit 2
+        ;;
+    esac
+  done
+  if [ "$fix_rc" -eq 1 ] || [ "$tests_rc" -eq 1 ]; then
     git reset --hard HEAD~1 >/dev/null || exit 2   # back the culprit out
     mark_done "$id"
     printf 'CULPRIT\t%s\n' "$id"
     exit 1
+  fi
+
+  # A green fix session may still have REFORMATTED this branch's files. Fold
+  # that into the merge commit now: left loose, it dirties the tree for the
+  # NEXT iteration's `git merge`, which most likely machine-faults against it
+  # (the CULPRIT path never surfaces this -- `git reset --hard HEAD~1` cleans
+  # it along with everything else).
+  mapfile -t reformat_paths < <(git diff --name-only -- . "${BEADS_PASSIVE_EXPORTS_EXCLUDE_PATHSPECS[@]}")
+  if [ "${#reformat_paths[@]}" -gt 0 ]; then
+    git add -- "${reformat_paths[@]}" || {
+      echo "GATE COULD NOT RUN: could not stage the fix session's reformat of '$id'" >&2; exit 2; }
+    git commit --quiet --amend --no-edit || {
+      echo "GATE COULD NOT RUN: could not amend '$id''s merge commit with the reformat" >&2; exit 2; }
   fi
 
   run_gate lock; rc=$?
@@ -229,16 +314,17 @@ for id in $(cat "$ACCEPTED"); do
       printf 'SURVIVOR\t%s\n' "$id"
       mark_done "$id"
       ;;
-    2)
-      # A machine fault mid-loop is NOT this branch's verdict. Stop; never bounce.
-      echo "GATE COULD NOT RUN: lock_currency machine fault on '$id' -- stopping, landing nothing further" >&2
-      exit 2
-      ;;
-    *)
+    1)
       git reset --hard HEAD~1 >/dev/null || exit 2
       mark_done "$id"
       printf 'CULPRIT\t%s\n' "$id"
       exit 1
+      ;;
+    *)
+      # A machine fault mid-loop (its documented 2, and equally a 127/126/
+      # signal) is NOT this branch's verdict. Stop; never bounce.
+      echo "GATE COULD NOT RUN: lock_currency machine fault (exit $rc) on '$id' -- stopping, landing nothing further" >&2
+      exit 2
       ;;
   esac
 done

@@ -1,11 +1,17 @@
 """Tests for scripts/worktree-gc-classify.sh (proj-9owc).
 
-`/land`'s Section 4 worktree-GC backstop sweep (`.claude/skills/land/SKILL.md`)
-decides what to do with each candidate under `.claude/worktrees/` via a
-per-candidate predicate that -- before this ticket -- lived only as inline
-bash in a markdown fence, reachable by no gate at all. The script's own header
-carries WHY it was extracted and what each bucket means; that is deliberately
-not retold here.
+`/land`'s Section 4 worktree-GC backstop sweep decides what to do with each
+candidate under `.claude/worktrees/` via a per-candidate predicate that --
+before this ticket -- lived only as inline bash in a markdown fence, reachable
+by no gate at all. The script's own header carries WHY it was extracted and
+what each bucket means; that is deliberately not retold here.
+
+The SWEEP around it has since been extracted the same way, into
+`scripts/worktree-gc-sweep.sh` (proj-s9xe.5, tested in
+`tests/test_worktree_gc_sweep.py`) -- that script, not the surviving
+`.claude/skills/land/SKILL.md` fence, is what the bucket-vocabulary test at
+the bottom of this module now reads. The fence is deleted by the call-site
+ticket that wires the sweep in.
 
 What matters to the tests: the script only ever PRINTS a bucket name -- it
 never removes a worktree or deletes a branch -- so every fixture below only
@@ -41,7 +47,7 @@ Plus the two positive buckets (full-reclaim via each ancestry arm), the
 proj-em6v worktree-uniqueness-suffix strip on the origin arm, and a usage-
 error pin.
 
-Two tests do not touch git at all: they pin that SKILL.md's `case "$BUCKET"`
+Two tests do not touch git at all: they pin that the sweep script's `case "$BUCKET"`
 dispatch handles exactly the buckets this script can print. That coupling is
 the one part of the decision path the extraction did NOT make testable on its
 own -- a rename on either side fails safe into `*)` and silently stops GC
@@ -50,9 +56,11 @@ while everything stays green.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from _gitrepo import _git
@@ -97,10 +105,27 @@ def _add_worktree(
     return wt
 
 
-def _commit(wt: Path, filename: str, message: str) -> str:
+def _commit(
+    wt: Path, filename: str, message: str, committer_date: str | None = None
+) -> str:
+    """`committer_date` forges the committer timestamp the script reads via
+    `git log -1 --format=%ct`. It goes through a direct `subprocess.run`
+    because `_gitrepo._git` accepts no env; everything else stays on `_git`."""
     (wt / filename).write_text(f"{message}\n")
     _git(wt, "add", filename)
-    _git(wt, "commit", "-q", "-m", message)
+    if committer_date is None:
+        _git(wt, "commit", "-q", "-m", message)
+    else:
+        result = subprocess.run(
+            ["git", "commit", "-q", "-m", message],
+            cwd=wt,
+            env={**os.environ, "GIT_COMMITTER_DATE": committer_date},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, f"git commit failed: {result.stderr}"
     return _git(wt, "rev-parse", "HEAD").stdout.strip()
 
 
@@ -165,7 +190,7 @@ def _buckets_the_script_can_print() -> set[str]:
 
 
 def _buckets_the_land_loop_handles() -> set[str]:
-    """Every non-default arm label of `SKILL.md`'s `case "$BUCKET"` dispatch."""
+    """Every non-default arm label of the sweep script's `case "$BUCKET"` dispatch."""
     text = SWEEP_TEXT
     start = text.index('case "$BUCKET" in')
     end = text.index("\n  esac", start)
@@ -394,20 +419,50 @@ def test_worktree_agent_not_merged_clean_and_old_enough_is_dir_only(
     prints the bucket -- so there is nothing to assert about the ref here;
     SKILL.md's own case arm is what keeps it.
 
-    proj-ej6u: the floor is `-3600`, not `0`, because under `pytest -n 8` a
-    `date +%s` read on one vCPU can transiently observe CLOCK_REALTIME a few
-    seconds BEHIND a just-committed `git commit`'s recorded timestamp read on
-    another core, making the script's `now - last_commit_ts` negative and
-    failing even a `-ge 0` floor (same backward-wall-clock class as proj-0dnk
-    and proj-44cq, and the same "widen the boundary" fix). Any negative floor
-    exercises the identical `-ge` branch, and nothing is lost by widening it:
-    the other side of the floor is pinned by the too-young sibling below."""
+    proj-ej6u originally widened this floor to `-3600` because under
+    `pytest -n 8` a `date +%s` read on one vCPU could transiently observe
+    CLOCK_REALTIME a few seconds BEHIND a just-committed `git commit`'s
+    recorded timestamp read on another core, making the script's
+    `now - last_commit_ts` negative and failing even a `-ge 0` floor (same
+    backward-wall-clock class as proj-0dnk and proj-44cq). proj-o7rt fixed the
+    real cause instead: the script now clamps a negative age to 0 before the
+    `-ge` comparison, so with a `min_age_seconds` floor of `0` the comparison
+    is `age >= 0`, which holds unconditionally regardless of clock skew.
+    Restored to `0` (proj-d7xw) to exercise the real boundary rather than a
+    workaround-widened one; the too-young sibling below still pins the other
+    side of the floor."""
     repo = _init_repo(tmp_path)
     wt = _add_worktree(repo, ".claude/worktrees/leaked", "worktree-agent-leaked")
     sha = _commit(wt, "wip.txt", "abandoned build")
     assert not _is_ancestor(repo, sha, "main")
 
-    result = _run(repo, wt, sha, "0", "worktree-agent-leaked", min_age_seconds="-3600")
+    result = _run(repo, wt, sha, "0", "worktree-agent-leaked", min_age_seconds="0")
+
+    assert _bucket(result) == "dir-only"
+
+
+def test_worktree_agent_future_dated_commit_with_zero_floor_is_dir_only(
+    tmp_path: Path,
+) -> None:
+    """proj-o7rt: a committer timestamp AHEAD of the classifying process's own
+    `date +%s` makes `now - last_commit_ts` negative, and an unclamped
+    negative age failed even a `min_age_seconds=0` floor -- the
+    `keep-notmerged` misclassification behind
+    `test_dir_only_reclaim_removes_the_directory_but_keeps_the_ref`'s flake
+    under `-n 8`. The script's own comment carries why the clock can step
+    backward; what only this test can say is that it FORGES the date rather
+    than racing a real clock, so reverting the clamp turns it red on every
+    run instead of occasionally.
+    """
+    repo = _init_repo(tmp_path)
+    wt = _add_worktree(
+        repo, ".claude/worktrees/future-dated", "worktree-agent-futuredated"
+    )
+    sha = _commit(
+        wt, "wip.txt", "abandoned build", committer_date=str(int(time.time()) + 3600)
+    )
+
+    result = _run(repo, wt, sha, "0", "worktree-agent-futuredated", min_age_seconds="0")
 
     assert _bucket(result) == "dir-only"
 
@@ -437,8 +492,10 @@ def test_worktree_agent_not_merged_dirty_and_old_enough_is_kept_dirty(
     """The dir-only arm gates on the SAME dirty-tree guard as full-reclaim --
     old enough and worktree-agent-shaped is not sufficient by itself.
 
-    proj-ej6u: the floor is `-3600` rather than `0` for the same reason as the
-    clean/old-enough sibling above, which documents the mechanism in full."""
+    proj-ej6u originally widened the floor to `-3600` for the same reason as
+    the clean/old-enough sibling above; proj-o7rt's clamp makes `0` the
+    deterministic floor here too, and it is restored (proj-d7xw) for the same
+    reason -- see that sibling's docstring for the mechanism in full."""
     repo = _init_repo(tmp_path)
     wt = _add_worktree(
         repo, ".claude/worktrees/leaked-dirty", "worktree-agent-leakeddirty"
@@ -446,9 +503,7 @@ def test_worktree_agent_not_merged_dirty_and_old_enough_is_kept_dirty(
     sha = _commit(wt, "wip.txt", "abandoned build")
     (wt / "scratch.tmp").write_text("uncommitted\n")
 
-    result = _run(
-        repo, wt, sha, "0", "worktree-agent-leakeddirty", min_age_seconds="-3600"
-    )
+    result = _run(repo, wt, sha, "0", "worktree-agent-leakeddirty", min_age_seconds="0")
 
     assert _bucket(result) == "keep-dirty"
 
