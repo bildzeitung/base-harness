@@ -88,6 +88,6 @@ cd /path/to/your/project
 `install.sh` also runs `bd init` for you, non-interactively and with the harness's opinions
 (`--skip-agents`, `import.auto: false`) baked in, then builds `./venv` through
 `scripts/python-init.sh` (pinning the newest pyenv-installed CPython in `.python-version` first,
-when pyenv is present). Then read
+when pyenv is present), and creates a private GitHub `origin` via `gh` when the repo has none. Then read
 [`docs/getting-started.md`](docs/getting-started.md), which walks through the parts it does not do:
 `bd dolt push`, the first ticket, and the first `/code` run.

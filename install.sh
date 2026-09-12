@@ -8,11 +8,14 @@
 # opinions baked in (see "tracker" below). If pyenv is on PATH and the target
 # has no .python-version, it pins the newest installed CPython there (see
 # "python" below), then builds ./venv through scripts/python-init.sh when a
-# python >= 3.11 resolves there (see "venv" below). It does NOT publish the
-# tracker (`bd dolt push`); docs/getting-started.md walks through that.
+# python >= 3.11 resolves there (see "venv" below). If the repo has no git
+# remote and `gh` is on PATH, it creates a private GitHub repository named
+# after the target directory and adds it as origin (see "remote" below). It
+# does NOT publish the tracker (`bd dolt push`); docs/getting-started.md walks
+# through that.
 #
 # Usage:
-#   ./install.sh /path/to/repo [--dry-run] [--force] [--prefix <id-prefix>] [--skip-bd-init]
+#   ./install.sh /path/to/repo [--dry-run] [--force] [--prefix <id-prefix>] [--skip-bd-init] [--skip-remote]
 #
 # --prefix defaults to the target directory's basename. It must contain no
 # double hyphen ("--"): /land's ref backstop splits on it (docs/customizing.md).
@@ -27,6 +30,7 @@ TARGET=""
 DRY_RUN=0
 FORCE=0
 SKIP_BD=0
+SKIP_REMOTE=0
 PREFIX=""
 want_prefix=0
 for arg in "$@"; do
@@ -37,10 +41,11 @@ for arg in "$@"; do
     --dry-run)      DRY_RUN=1 ;;
     --force)        FORCE=1 ;;
     --skip-bd-init) SKIP_BD=1 ;;
+    --skip-remote)  SKIP_REMOTE=1 ;;
     --prefix)       want_prefix=1 ;;
     --prefix=*)     PREFIX="${arg#--prefix=}" ;;
     -h|--help)
-      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     -*) echo "install: unknown option '$arg'" >&2; exit 1 ;;
@@ -52,7 +57,7 @@ for arg in "$@"; do
 done
 [ "$want_prefix" = 1 ] && { echo "install: --prefix needs a value" >&2; exit 1; }
 
-[ -n "$TARGET" ] || { echo "install: usage: ./install.sh /path/to/repo [--dry-run] [--force] [--prefix <id-prefix>] [--skip-bd-init]" >&2; exit 1; }
+[ -n "$TARGET" ] || { echo "install: usage: ./install.sh /path/to/repo [--dry-run] [--force] [--prefix <id-prefix>] [--skip-bd-init] [--skip-remote]" >&2; exit 1; }
 [ -d "$TEMPLATE" ] || { echo "install: template/ not found beside this script" >&2; exit 2; }
 [ -d "$TARGET" ]   || { echo "install: '$TARGET' is not a directory" >&2; exit 1; }
 
@@ -329,6 +334,46 @@ else
   fi
 fi
 
+# ---- remote --------------------------------------------------------------------
+#
+# `bd dolt push`, the one step left to the walkthrough, needs a git origin. A
+# fresh `git init` has none, so when `gh` is on PATH and the repo has no remote
+# at all, create a private GitHub repository named after the target directory
+# (basename only, never the path) and wire it up as origin. Private, no wiki,
+# no issues: the tracker is beads, not GitHub Issues, and a public repo is a
+# decision to make on purpose. Any existing remote, whatever its name, means
+# the user has already decided where this repo lives. Runs last so a failure
+# here leaves the files, tracker and venv in place.
+echo
+echo "remote"
+REMOTE_CREATED=0
+REPO_NAME="$(basename "$(cd "$TARGET" && pwd -P)")"
+if [ "$SKIP_REMOTE" = 1 ]; then
+  echo "  SKIP      gh repo create (--skip-remote)"
+elif [ "$GIT_INITED" != dry ] && [ -n "$(git -C "$TARGET" remote 2>/dev/null)" ]; then
+  echo "  SKIP      gh repo create (remote exists: $(git -C "$TARGET" remote | paste -sd' ' -))"
+elif ! command -v gh >/dev/null 2>&1; then
+  echo "  SKIP      gh repo create (gh not on PATH)"
+elif ! gh auth status >/dev/null 2>&1; then
+  echo "  SKIP      gh repo create (gh is not logged in -- 'gh auth login', then create the remote by hand)"
+elif [ "$DRY_RUN" = 1 ]; then
+  echo "  would run gh repo create $REPO_NAME --source=. --remote=origin --private --disable-wiki --disable-issues"
+else
+  gh_out="$(mktemp)" || exit 2
+  if (cd "$TARGET" && gh repo create "$REPO_NAME" --source=. --remote=origin --private --disable-wiki --disable-issues) >"$gh_out" 2>&1; then
+    rm -f "$gh_out"
+    echo "  ran       gh repo create $REPO_NAME --source=. --remote=origin --private --disable-wiki --disable-issues"
+    echo "  origin    $(git -C "$TARGET" remote get-url origin 2>/dev/null)"
+    REMOTE_CREATED=1
+  else
+    echo "install: gh repo create failed:" >&2
+    sed 's/^/    /' "$gh_out" >&2
+    rm -f "$gh_out"
+    echo "install: files, tracker and venv are in place. Create the remote by hand (or fix the cause and re-run; every other step is skipped once done)." >&2
+    exit 2
+  fi
+fi
+
 if [ "$DRY_RUN" = 1 ]; then
   echo
   echo "install: dry run complete — re-run without --dry-run to apply"
@@ -355,6 +400,12 @@ if [ "$VENV_SKIPPED" = 1 ]; then
   echo "install: NOTE — no python >= 3.11 resolved, so ./venv was not built. Install one"
   echo "         (pyenv: 'pyenv install 3', then re-run this installer to pin it) and run"
   echo "         ./scripts/python-init.sh before step 3 below."
+fi
+
+if [ "$REMOTE_CREATED" = 1 ]; then
+  echo
+  echo "install: origin is a new, empty GitHub repository -- push the branch first:"
+  echo "           git -C $TARGET push -u origin ${DEFAULT_BRANCH:-main}"
 fi
 
 cat <<'NEXT'

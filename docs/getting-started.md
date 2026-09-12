@@ -26,8 +26,11 @@ prerequisites and filling in your own project's `CLAUDE.md`.
 
 The target does not need to be a git repository yet: the installer runs `git init -b main` if it
 isn't one. `install.sh` never overwrites an existing file unless you pass `--force`. After copying
-it runs `bd init` for you, non-interactively (see step 2), then builds `./venv` (see step 3). It
-does **not** publish the tracker; that needs a git origin and is yours to run.
+it runs `bd init` for you, non-interactively (see step 2), then builds `./venv` (see step 3). If
+the repo has no git remote and `gh` is logged in, it also creates a **private** GitHub repository
+named after the target directory (no wiki, no issues — the tracker is beads) and adds it as `origin`;
+pass `--skip-remote` to opt out, and any existing remote is left alone. It does **not** publish the
+tracker; that is yours to run.
 
 If your repo's default branch isn't `main`, the installer says so and stops short of rewriting
 anything — see [customizing.md](customizing.md#default-branch-name).
@@ -63,9 +66,11 @@ You will find two commits on your branch afterwards: bd's own `bd init: initiali
 tracking`, and the installer's `chore: pin beads import.auto=false`. If `.beads/` already exists the
 installer leaves the tracker entirely alone, and `--skip-bd-init` skips this step outright.
 
-What remains is yours to run, because it needs a git origin:
+What remains is yours to run. It needs a git origin, which the installer created for you if `gh`
+was available and the repo had none (push your branch to it first):
 
 ```bash
+git push -u origin main
 bd dolt push          # publishes over refs/dolt/data on your git remote
 ```
 
