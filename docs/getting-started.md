@@ -24,28 +24,34 @@ prerequisites and filling in your own project's `CLAUDE.md`.
 ./install.sh /path/to/your/project
 ```
 
-`install.sh` never overwrites an existing file unless you pass `--force`, and it deliberately does
-**not** run `bd init`, create a venv, or touch git state. Those are steps you should run and see.
+The target does not need to be a git repository yet: the installer runs `git init -b main` if it
+isn't one. `install.sh` never overwrites an existing file unless you pass `--force`. After copying
+it runs `bd init` for you, non-interactively (see step 2). It does **not** create a venv or publish
+the tracker; those are steps you should run and see.
 
 If your repo's default branch isn't `main`, the installer says so and stops short of rewriting
 anything — see [customizing.md](customizing.md#default-branch-name).
 
-## 2. Initialise the tracker
+## 2. The tracker (done by `install.sh`)
+
+`bd init` is interactive by default. The installer runs the opinionated non-interactive equivalent
+so the tracker comes up the same way every time:
 
 ```bash
-cd /path/to/your/project
-bd init
+bd init --non-interactive --role maintainer --skip-agents --prefix <prefix>
 ```
 
-Then **immediately** turn off JSONL auto-import, before you file a single ticket:
-
-```yaml
-# .beads/config.yaml
-import:
-  auto: false
-```
-
-Commit that file. This is the single most important configuration in the harness.
+- **`--skip-agents`** — bd would otherwise write its own `CLAUDE.md`, `.claude/settings.json`,
+  `AGENTS.md`, `.codex/` and `.agents/` straight over the harness files.
+- **`--prefix`** defaults to the target directory's basename; override with
+  `./install.sh <repo> --prefix <p>`. The installer rejects a prefix containing `--` (the one id-shape
+  rule, see [customizing.md](customizing.md#ticket-prefix)) and anything bd would silently rewrite.
+- **Hooks are kept.** bd points `core.hooksPath` at `.beads/hooks/`; anything that was in
+  `.git/hooks/` is bypassed from then on.
+- **`import.auto: false`** is written into `.beads/config.yaml` and committed. This is the single
+  most important configuration in the harness, and the reason the installer writes the file rather
+  than calling `bd config set` (which stores the key in the Dolt database, where
+  `harness-doctor.sh` cannot see it).
 
 > **Why.** With auto-import on, the `post-checkout`/`post-merge` git hooks replay
 > `.beads/issues.jsonl` back into Dolt after any pull or merge. A `git pull --rebase` following a
@@ -53,11 +59,13 @@ Commit that file. This is the single most important configuration in the harness
 > The close looks successful, the ticket quietly reopens, and the pipeline re-dispatches work that
 > was already done. This bit the source project three separate times before it was understood.
 
-Drop the initial commit and publish the tracker:
+You will find two commits on your branch afterwards: bd's own `bd init: initialize beads issue
+tracking`, and the installer's `chore: pin beads import.auto=false`. If `.beads/` already exists the
+installer leaves the tracker entirely alone, and `--skip-bd-init` skips this step outright.
+
+What remains is yours to run, because it needs a git origin:
 
 ```bash
-git add .beads/config.yaml .beads/issues.jsonl
-git commit -m "chore: initialise issue tracker"
 bd dolt push          # publishes over refs/dolt/data on your git remote
 ```
 

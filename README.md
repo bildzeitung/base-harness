@@ -83,6 +83,7 @@ cd /path/to/your/project
 ./venv/bin/pytest tests -q        # 939 passed
 ```
 
-Then read [`docs/getting-started.md`](docs/getting-started.md), which walks through the parts
-`install.sh` deliberately does not do for you: `bd init`, the first ticket, and the first `/code`
-run.
+`install.sh` also runs `bd init` for you, non-interactively and with the harness's opinions
+(`--skip-agents`, `import.auto: false`) baked in. Then read
+[`docs/getting-started.md`](docs/getting-started.md), which walks through the parts it does not do:
+`bd dolt push`, the first ticket, and the first `/code` run.
