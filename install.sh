@@ -148,9 +148,13 @@ while IFS= read -r rel; do
     [ -x "$src" ] && chmod +x "$dst"
   fi
 done < <(
-  # Prune Python bytecode caches: running the template's own tests in place
-  # leaves __pycache__/ behind, and stale .pyc files must never be installed.
-  cd "$TEMPLATE" && find . \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' \) -prune -o -type f -print \
+  # Prune tool state: running the template's own gates in place leaves
+  # __pycache__/, .ruff_cache/, .pytest_cache/, .nox/ and a venv behind, and
+  # none of it is template content -- a stale .pyc or another machine's ruff
+  # cache must never be installed.
+  cd "$TEMPLATE" && find . \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' \
+      -o -name .ruff_cache -o -name .pytest_cache -o -name .mypy_cache -o -name .nox \
+      -o -name venv -o -name .venv \) -prune -o -type f -print \
     | sed 's#^\./##' | sort
 )
 
