@@ -501,7 +501,8 @@ def test_tmpdir_default_expansion_is_never_flagged() -> None:
     reads `${TMPDIR:-/tmp}` to place its own cross-block scratch state -- a standard
     POSIX env var, never assigned by any skill's own bash."""
     assert (
-        _violations_in_block('SWEEP_TMP="${TMPDIR:-/tmp}/harness-sweep-state"\n') == set()
+        _violations_in_block('SWEEP_TMP="${TMPDIR:-/tmp}/harness-sweep-state"\n')
+        == set()
     )
 
 

@@ -188,8 +188,11 @@ def _merge_script_calls() -> list[str]:
     each covered directly by its own test module. What the skill still owns -- and
     what can still drift silently -- is the WIRING: the state paths it hands them.
     """
-    blocks = [b for b in _skill_blocks()
-              if "land-merge-batch.sh" in b or "land-replay.sh" in b]
+    blocks = [
+        b
+        for b in _skill_blocks()
+        if "land-merge-batch.sh" in b or "land-replay.sh" in b
+    ]
     assert len(blocks) == 2, (
         f"expected exactly 2 fenced blocks calling the merge scripts (first pass + "
         f"isolation replay), found {len(blocks)} -- re-check by hand before adjusting"
@@ -203,7 +206,13 @@ def test_both_merge_script_calls_are_given_the_state_paths_they_need() -> None:
     stops a conflicting base from taking its dependents with it -- Section 3a's
     invariant gone without a word."""
     for call in _merge_script_calls():
-        for flag in ("--accepted", "--landed", "--msg-dir", "--conflicts-dir", "--graph"):
+        for flag in (
+            "--accepted",
+            "--landed",
+            "--msg-dir",
+            "--conflicts-dir",
+            "--graph",
+        ):
             assert flag in call, f"a merge script call no longer passes {flag}"
 
 
@@ -212,8 +221,12 @@ def test_the_replay_call_passes_its_resume_state() -> None:
     restarts from the top and the pass never converges."""
     replay = [b for b in _merge_script_calls() if "land-replay.sh" in b]
     assert len(replay) == 1
-    assert "--state" in replay[0], "the replay call lost --state; it can no longer resume"
-    assert "--base-ref" in replay[0], "the replay call lost --base-ref; its reset target is implicit"
+    assert "--state" in replay[0], (
+        "the replay call lost --state; it can no longer resume"
+    )
+    assert "--base-ref" in replay[0], (
+        "the replay call lost --base-ref; its reset target is implicit"
+    )
 
 
 def test_kick_back_block_reads_conflicts_from_disk_not_a_bare_variable() -> None:

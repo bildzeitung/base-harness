@@ -253,7 +253,7 @@ SKIP_EXECUTED: dict[tuple[str, str], str] = {
 
 # Prose context: an inline single-backtick span outside any fence.
 SKIP_PROSE: dict[tuple[str, str], str] = {
-            (".claude/skills/release/SKILL.md", "bd list"): (
+    (".claude/skills/release/SKILL.md", "bd list"): (
         "Prose describing bd list's general sort order ('bd list sorts "
         "priority-major, not by date') -- not an invocation. The real, "
         "--limit-pinned call two lines above it is the inline-backtick site this "
@@ -272,7 +272,7 @@ SKIP_PROSE: dict[tuple[str, str], str] = {
         "default of 50') as the source of the canonical --limit 0 rationale -- not "
         "an invocation this skill runs."
     ),
-        }
+}
 
 
 def _command_segments(line: str) -> list[str]:

@@ -374,8 +374,7 @@ def test_worktree_recycled_onto_land_branch_merged_but_not_pushed_is_still_caugh
     _git(repo, "checkout", "-q", "main")
     _git(repo, "merge", "-q", "--no-ff", "-m", "merge land/proj-x", "land/proj-x")
     assert (
-        _git(repo, "rev-parse", "origin/main").stdout.strip()
-        == origin_trunk_sha_before
+        _git(repo, "rev-parse", "origin/main").stdout.strip() == origin_trunk_sha_before
     )
 
     result = _run(wt)

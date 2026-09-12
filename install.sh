@@ -5,8 +5,11 @@
 # Runs `git init -b main` if the target is not already a repository, copies
 # template/ into it, never overwriting an existing file unless --force is given,
 # then initialises the beads tracker non-interactively with the harness's
-# opinions baked in (see "tracker" below). It does NOT create a venv or publish
-# the tracker (`bd dolt push`) — those are walked through in docs/getting-started.md.
+# opinions baked in (see "tracker" below). If pyenv is on PATH and the target
+# has no .python-version, it pins the newest installed CPython there (see
+# "python" below), then builds ./venv through scripts/python-init.sh when a
+# python >= 3.11 resolves there (see "venv" below). It does NOT publish the
+# tracker (`bd dolt push`); docs/getting-started.md walks through that.
 #
 # Usage:
 #   ./install.sh /path/to/repo [--dry-run] [--force] [--prefix <id-prefix>] [--skip-bd-init]
@@ -37,7 +40,7 @@ for arg in "$@"; do
     --prefix)       want_prefix=1 ;;
     --prefix=*)     PREFIX="${arg#--prefix=}" ;;
     -h|--help)
-      sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     -*) echo "install: unknown option '$arg'" >&2; exit 1 ;;
@@ -108,10 +111,23 @@ echo "install: branch      ${DEFAULT_BRANCH:-<detached or unborn>}"
 [ "$DRY_RUN" = 1 ] && echo "install: DRY RUN — nothing will be written"
 echo
 
+# pyproject.toml and requirements.lock travel as a pair: the template's lock
+# pins the template's (empty) dependency set, so copying it beside a target's
+# own pyproject.toml would hand python-init.sh a lock that contradicts the
+# intent file. Decided before the loop, because the loop itself writes
+# pyproject.toml before it reaches the lock.
+OWN_PYPROJECT=0
+[ -e "$TARGET/pyproject.toml" ] && OWN_PYPROJECT=1
+
 copied=0; skipped=0; overwritten=0
 while IFS= read -r rel; do
   src="$TEMPLATE/$rel"
   dst="$TARGET/$rel"
+  if [ "$rel" = requirements.lock ] && [ "$OWN_PYPROJECT" = 1 ] && [ "$FORCE" != 1 ]; then
+    printf '  SKIP      %s (target has its own pyproject.toml; the template lock would not match it)\n' "$rel"
+    skipped=$((skipped + 1))
+    continue
+  fi
   if [ -e "$dst" ] && [ "$FORCE" != 1 ]; then
     printf '  SKIP      %s (exists — use --force to overwrite)\n' "$rel"
     skipped=$((skipped + 1))
@@ -215,6 +231,100 @@ CFG
   fi
 fi
 
+# ---- python --------------------------------------------------------------------
+#
+# scripts/python-init.sh opens with `python -m venv venv`. Under pyenv, `python`
+# is a shim that resolves through .python-version and then pyenv's global
+# version. A fresh machine usually has global = "system", and most systems ship
+# python3 with no `python` alias, so the shim fails the very first run with
+# "pyenv: python: command not found". Pinning the newest installed CPython here
+# makes that run work, and the same file is what scripts/compile-lock.sh reads
+# to resolve requirements.lock for the right interpreter -- so the pin is
+# load-bearing, not a convenience. An existing .python-version is a project
+# decision and is left alone, --force or not. This runs after `bd init` so its
+# commit cannot sweep the file up.
+echo
+echo "python"
+pv="$TARGET/.python-version"
+PYVER=""
+if ! command -v pyenv >/dev/null 2>&1; then
+  echo "  SKIP      .python-version (pyenv not on PATH)"
+elif [ -e "$pv" ]; then
+  echo "  SKIP      .python-version (exists: $(head -1 "$pv"))"
+else
+  # CPython only: `pyenv versions --bare` also lists pypy-*, anaconda-* and
+  # friends, which the regex drops. sort -V puts 3.14.5 above 3.9.18; a plain
+  # sort would not.
+  PYVER="$(pyenv versions --bare 2>/dev/null | grep -E '^3\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+  if [ -z "$PYVER" ]; then
+    echo "  SKIP      .python-version (pyenv has no CPython 3.x installed -- 'pyenv install 3' first)"
+  elif [ "$DRY_RUN" = 1 ]; then
+    echo "  would write .python-version ($PYVER)"
+  else
+    printf '%s\n' "$PYVER" >"$pv" || exit 2
+    echo "  wrote     .python-version ($PYVER) -- commit it; scripts/compile-lock.sh reads it"
+  fi
+  case "$PYVER" in
+    3.[0-9].*|3.10.*)
+      echo "  NOTE      $PYVER is older than the 3.11 the gates assume; 'pyenv install 3' and re-pin" ;;
+  esac
+fi
+
+# ---- venv ----------------------------------------------------------------------
+#
+# scripts/python-init.sh runs here rather than being left to the walkthrough:
+# every fresh install needs it and it was the step most often skipped. The
+# template ships a placeholder pyproject.toml (no runtime deps, a dev extra with
+# the gate tools) and a matching requirements.lock, so on a fresh target the
+# locked path succeeds and tests/ is runnable the moment this returns. A target
+# that brought its own pyproject.toml but no lock gets --unlocked, the only path
+# that can resolve for it. Skipped, not failed, when no python >= 3.11 resolves
+# from the target: nothing here can fix that, and every file is already in
+# place for a hand run later. The probe runs FROM the target so the pyenv shim
+# sees the .python-version written above.
+echo
+echo "venv"
+VENV_SKIPPED=0
+# A dry run has written nothing, so it predicts instead: the pin it would have
+# written goes in through PYENV_VERSION (which the shim honours over the file),
+# and the lock counts as present if the copy above would have placed it.
+py=""; pydesc=""
+for cand in python python3; do
+  if (cd "$TARGET" && env ${PYVER:+PYENV_VERSION=$PYVER} "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)') >/dev/null 2>&1; then
+    py="$cand"
+    pydesc="$(cd "$TARGET" && env ${PYVER:+PYENV_VERSION=$PYVER} "$cand" --version 2>&1)"
+    break
+  fi
+done
+lock_present=0
+[ -e "$TARGET/requirements.lock" ] && lock_present=1
+[ "$DRY_RUN" = 1 ] && [ "$OWN_PYPROJECT" = 0 ] && lock_present=1
+if [ -e "$TARGET/venv" ]; then
+  echo "  SKIP      python-init.sh (venv/ exists)"
+elif [ -z "$py" ]; then
+  echo "  SKIP      python-init.sh (no python >= 3.11 resolves from the target)"
+  VENV_SKIPPED=1
+else
+  init_args=""
+  [ "$lock_present" = 1 ] || init_args="--unlocked"
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "  would run ./scripts/python-init.sh${init_args:+ $init_args} ($pydesc via $py)"
+  else
+    out="$(mktemp)" || exit 2
+    if (cd "$TARGET" && ./scripts/python-init.sh $init_args) >"$out" 2>&1; then
+      rm -f "$out"
+      echo "  ran       ./scripts/python-init.sh${init_args:+ $init_args} ($pydesc via $py)"
+      echo "  built     venv/"
+    else
+      echo "install: scripts/python-init.sh failed; last 30 lines:" >&2
+      tail -30 "$out" | sed 's/^/    /' >&2
+      rm -f "$out"
+      echo "install: files and tracker are in place. Fix the cause, then run ./scripts/python-init.sh by hand." >&2
+      exit 2
+    fi
+  fi
+fi
+
 if [ "$DRY_RUN" = 1 ]; then
   echo
   echo "install: dry run complete — re-run without --dry-run to apply"
@@ -236,15 +346,21 @@ if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "main" ]; then
   echo "         See docs/customizing.md ('Default branch name') in the harness export."
 fi
 
+if [ "$VENV_SKIPPED" = 1 ]; then
+  echo
+  echo "install: NOTE — no python >= 3.11 resolved, so ./venv was not built. Install one"
+  echo "         (pyenv: 'pyenv install 3', then re-run this installer to pin it) and run"
+  echo "         ./scripts/python-init.sh before step 3 below."
+fi
+
 cat <<'NEXT'
 
 install: next steps (see docs/getting-started.md for the full walkthrough)
 
-  1. Install prerequisites:      jq, python3, (docker for diagram validation)
+  1. Install prerequisites:      jq, (docker for diagram validation)
   2. Publish the tracker:        bd dolt push        (needs a git origin)
-  3. Build the venv:             ./scripts/python-init.sh
-  4. Check the install:          ./scripts/harness-doctor.sh
-  5. Fill in the placeholders:   CLAUDE.md, docs/conventions.md, docs/design.md
-  6. File your first ticket, then run /code
+  3. Check the install:          ./scripts/harness-doctor.sh && ./venv/bin/pytest tests -q
+  4. Fill in the placeholders:   CLAUDE.md, pyproject.toml, docs/conventions.md, docs/design.md
+  5. File your first ticket, then run /code
 
 NEXT

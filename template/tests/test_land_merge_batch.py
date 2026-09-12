@@ -21,7 +21,10 @@ from conftest import REPO_ROOT
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
 
 
@@ -65,17 +68,30 @@ def _state(repo: Path, *ids: str) -> dict[str, Path]:
     (d / "landed").write_text("")
     for i in ids:
         (d / "msg" / i).write_text(f"Merge land/{i}")
-    return {"accepted": d / "accepted", "landed": d / "landed",
-            "msg": d / "msg", "conflicts": d / "conflicts"}
+    return {
+        "accepted": d / "accepted",
+        "landed": d / "landed",
+        "msg": d / "msg",
+        "conflicts": d / "conflicts",
+    }
 
 
 def _batch(repo: Path, st: dict[str, Path], graph: Path | None = None):
-    args = ["bash", str(repo / "scripts" / "land-merge-batch.sh"),
-            "--accepted", str(st["accepted"]), "--landed", str(st["landed"]),
-            "--msg-dir", str(st["msg"]), "--conflicts-dir", str(st["conflicts"])]
+    args = [
+        "bash",
+        str(repo / "scripts" / "land-merge-batch.sh"),
+        "--accepted",
+        str(st["accepted"]),
+        "--landed",
+        str(st["landed"]),
+        "--msg-dir",
+        str(st["msg"]),
+        "--conflicts-dir",
+        str(st["conflicts"]),
+    ]
     if graph:
         args += ["--graph", str(graph)]
-    return subprocess.run(args, cwd=repo, capture_output=True, text=True)
+    return subprocess.run(args, cwd=repo, capture_output=True, text=True, check=False)
 
 
 def _records(r) -> list[tuple[str, str]]:
@@ -102,24 +118,30 @@ def test_all_clean_merges_land_and_are_recorded(tmp_path: Path) -> None:
     assert "a.txt" in _git(repo, "ls-files") and "b.txt" in _git(repo, "ls-files")
 
 
-def test_a_conflicting_branch_is_reported_and_never_recorded_as_landed(tmp_path: Path) -> None:
+def test_a_conflicting_branch_is_reported_and_never_recorded_as_landed(
+    tmp_path: Path,
+) -> None:
     repo = _repo(tmp_path)
     _land_branch(repo, "a", "f.txt", "from a\n")
-    _land_branch(repo, "b", "f.txt", "from b\n")   # same file, conflicts with a
+    _land_branch(repo, "b", "f.txt", "from b\n")  # same file, conflicts with a
     st = _state(repo, "a", "b")
     r = _batch(repo, st)
     assert r.returncode == 1, f"a conflict is a real finding: {r.stdout} {r.stderr}"
     assert ("LANDED", "a") in _records(r)
     assert ("CONFLICT", "b") in _records(r)
-    assert st["landed"].read_text() == "a\n", "a conflicted branch must never reach the landed set"
-    assert (st["conflicts"] / "b").read_text().strip() != "", "conflicting paths must be persisted"
+    assert st["landed"].read_text() == "a\n", (
+        "a conflicted branch must never reach the landed set"
+    )
+    assert (st["conflicts"] / "b").read_text().strip() != "", (
+        "conflicting paths must be persisted"
+    )
 
 
 def test_a_conflict_drops_its_dependents_from_the_accepted_file(tmp_path: Path) -> None:
     """Section 3a's invariant, at the point it is actually enforced."""
     repo = _repo(tmp_path)
     _land_branch(repo, "a", "f.txt", "from a\n")
-    _land_branch(repo, "base", "f.txt", "from base\n")   # conflicts with a
+    _land_branch(repo, "base", "f.txt", "from base\n")  # conflicts with a
     _land_branch(repo, "dep", "d.txt", "dep\n")
     st = _state(repo, "a", "base", "dep")
     graph = repo / "graph"
@@ -130,7 +152,9 @@ def test_a_conflict_drops_its_dependents_from_the_accepted_file(tmp_path: Path) 
     recs = _records(r)
     assert ("CONFLICT", "base") in recs
     assert ("HELD", "dep") in recs, "a dependent of a departed base must be held"
-    assert ("LANDED", "dep") not in recs, "merging it would land base's rejected content"
+    assert ("LANDED", "dep") not in recs, (
+        "merging it would land base's rejected content"
+    )
     assert "dep" not in st["accepted"].read_text()
     assert st["landed"].read_text() == "a\n"
 
@@ -151,7 +175,9 @@ def test_a_dependent_already_dropped_is_skipped_not_merged(tmp_path: Path) -> No
     assert "d.txt" not in _git(repo, "ls-files")
 
 
-def test_a_machine_fault_stops_the_pass_and_is_not_a_clean_merge(tmp_path: Path) -> None:
+def test_a_machine_fault_stops_the_pass_and_is_not_a_clean_merge(
+    tmp_path: Path,
+) -> None:
     """A missing message file makes land-merge-one.sh exit 2. The negated-`if`
     idiom this script exists to avoid would read that 2 as rc=0 and record a
     LANDED that never happened."""
@@ -177,14 +203,16 @@ def test_missing_accepted_file_is_a_fault_not_an_empty_set(tmp_path: Path) -> No
     assert "does not exist" in r.stderr
 
 
-def test_a_drop_side_fault_stops_the_pass_instead_of_being_swallowed(tmp_path: Path) -> None:
+def test_a_drop_side_fault_stops_the_pass_instead_of_being_swallowed(
+    tmp_path: Path,
+) -> None:
     """The reduction used to run as `drop-from-accepted.sh | awk`, whose status
     is awk's (always 0) -- a drop-side machine fault was swallowed and the
     conflicted branch's dependents were silently left in the accepted set. The
     drop's output is captured and its own status checked now."""
     repo = _repo(tmp_path)
     _land_branch(repo, "a", "f.txt", "from a\n")
-    _land_branch(repo, "base", "f.txt", "from base\n")   # conflicts with a
+    _land_branch(repo, "base", "f.txt", "from base\n")  # conflicts with a
     st = _state(repo, "a", "base")
     sabotaged = repo / "scripts" / "drop-from-accepted.sh"
     sabotaged.write_text("#!/usr/bin/env bash\necho boom >&2\nexit 2\n")

@@ -40,10 +40,7 @@ REPLAY_SCRIPT = REPO_ROOT / "scripts" / "land-replay.sh"
 # else arm's diagnostic separately below -- together they keep the 0/1/else
 # partition itself from being collapsed in either script.
 GREP_RECHECK_HEADER = (
-    '  grep -qxF "$id" "$ACCEPTED"\n'
-    "  grc=$?\n"
-    '  case "$grc" in\n'
-    "    0) ;;\n"
+    '  grep -qxF "$id" "$ACCEPTED"\n  grc=$?\n  case "$grc" in\n    0) ;;\n'
 )
 
 # The else arm's first diagnostic line: a grep that fails for any reason other
@@ -51,7 +48,7 @@ GREP_RECHECK_HEADER = (
 # never read as "already dropped" -- which would silently skip every remaining
 # id while leaving them in the accepted file.
 GREP_RECHECK_FAULT_LINE = (
-    "      echo \"GATE COULD NOT RUN: grep failed (exit $grc) "
+    '      echo "GATE COULD NOT RUN: grep failed (exit $grc) '
     "re-checking '$id' in '$ACCEPTED'\" >&2\n"
 )
 

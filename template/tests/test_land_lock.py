@@ -98,7 +98,6 @@ import threading
 import time
 from pathlib import Path
 
-import conftest
 import pytest
 from _gitrepo import _git
 from conftest import (
@@ -1704,10 +1703,11 @@ def test_land_skill_threads_its_own_token_into_land_merge_one() -> None:
     are scripts now (land-merge-batch.sh, land-replay.sh) and both take it as
     --own-token; a call site that drops the flag makes every merge under it
     heartbeat blind."""
-    executed = LAND_SKILL_BASH
-
-    calls = [b for b in LAND_SKILL_BLOCKS
-             if "land-merge-batch.sh" in b or "land-replay.sh" in b]
+    calls = [
+        b
+        for b in LAND_SKILL_BLOCKS
+        if "land-merge-batch.sh" in b or "land-replay.sh" in b
+    ]
     assert len(calls) == 2, (
         f"expected both merge-script call sites (first pass + isolation replay), "
         f"found {len(calls)} -- has the skill's layout drifted?"

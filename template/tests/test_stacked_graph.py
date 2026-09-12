@@ -21,7 +21,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from conftest import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "scripts" / "stacked-graph.sh"
@@ -173,7 +172,9 @@ def test_second_on_branch_merge_base_does_not_hide_the_stack(tmp_path: Path) -> 
     _git(repo, "merge", "-q", "--no-ff", "-m", "merge main", "main")
     _publish(repo, "land/base", "land/dep")
 
-    n = len(_git(repo, "merge-base", "--all", "origin/land/base", "origin/land/dep").split())
+    n = len(
+        _git(repo, "merge-base", "--all", "origin/land/base", "origin/land/dep").split()
+    )
     assert n >= 2, f"fixture no longer produces multiple merge-bases (got {n})"
 
     assert _edges(_run(repo)) == {("dep", "base", "direct")}

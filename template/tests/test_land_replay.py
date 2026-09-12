@@ -27,7 +27,10 @@ from conftest import REPO_ROOT
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
 
 
@@ -76,32 +79,66 @@ def _state(repo: Path, *ids: str) -> dict[str, Path]:
     (d / "landed").write_text("")
     for i in ids:
         (d / "msg" / i).write_text(f"Merge land/{i}")
-    return {"accepted": d / "accepted", "landed": d / "landed", "msg": d / "msg",
-            "conflicts": d / "conflicts", "state": d / "replay-state"}
+    return {
+        "accepted": d / "accepted",
+        "landed": d / "landed",
+        "msg": d / "msg",
+        "conflicts": d / "conflicts",
+        "state": d / "replay-state",
+    }
 
 
-def _stub(repo: Path, *, red_when_present: str | None = None, red_phase: str = "tests",
-          baseline_red: bool = False) -> Path:
+def _stub(
+    repo: Path,
+    *,
+    red_when_present: str | None = None,
+    red_phase: str = "tests",
+    baseline_red: bool = False,
+) -> Path:
     """A gate stub. Reds only when a marker file is present in the tree, which is
     how a specific branch's content is made to 'turn the gate red'."""
     p = repo / "gate-stub.sh"
-    cond = (f'if [ -f "{red_when_present}" ] && [ "$1" = "{red_phase}" ]; then exit 1; fi'
-            if red_when_present else ":")
-    base = 'if [ ! -f .replay-baselined ]; then touch .replay-baselined; exit 1; fi' if baseline_red else ":"
+    cond = (
+        f'if [ -f "{red_when_present}" ] && [ "$1" = "{red_phase}" ]; then exit 1; fi'
+        if red_when_present
+        else ":"
+    )
+    base = (
+        "if [ ! -f .replay-baselined ]; then touch .replay-baselined; exit 1; fi"
+        if baseline_red
+        else ":"
+    )
     p.write_text(f"#!/usr/bin/env bash\n{base}\n{cond}\nexit 0\n")
     p.chmod(0o755)
     return p
 
 
-def _replay(repo: Path, st: dict[str, Path], stub: Path, *extra: str, graph: Path | None = None):
+def _replay(
+    repo: Path, st: dict[str, Path], stub: Path, *extra: str, graph: Path | None = None
+):
     env = {**os.environ, "LAND_GATE_CMD": str(stub)}
-    args = ["bash", str(repo / "scripts" / "land-replay.sh"),
-            "--accepted", str(st["accepted"]), "--landed", str(st["landed"]),
-            "--msg-dir", str(st["msg"]), "--conflicts-dir", str(st["conflicts"]),
-            "--state", str(st["state"]), "--base-ref", "origin/main", *extra]
+    args = [
+        "bash",
+        str(repo / "scripts" / "land-replay.sh"),
+        "--accepted",
+        str(st["accepted"]),
+        "--landed",
+        str(st["landed"]),
+        "--msg-dir",
+        str(st["msg"]),
+        "--conflicts-dir",
+        str(st["conflicts"]),
+        "--state",
+        str(st["state"]),
+        "--base-ref",
+        "origin/main",
+        *extra,
+    ]
     if graph:
         args += ["--graph", str(graph)]
-    return subprocess.run(args, cwd=repo, capture_output=True, text=True, env=env)
+    return subprocess.run(
+        args, cwd=repo, capture_output=True, text=True, env=env, check=False
+    )
 
 
 def _records(r) -> list[tuple[str, str]]:
@@ -142,7 +179,9 @@ def test_a_culprit_is_backed_out_and_reported_not_bounced(tmp_path: Path) -> Non
     assert r.returncode == 1, f"{r.stdout}\n{r.stderr}"
     assert ("SURVIVOR", "good") in _records(r)
     assert ("CULPRIT", "bad") in _records(r)
-    assert st["landed"].read_text() == "good\n", "a culprit must never reach the landed set"
+    assert st["landed"].read_text() == "good\n", (
+        "a culprit must never reach the landed set"
+    )
     assert (repo / "good.txt").exists(), "the survivor stays merged"
     assert not (repo / "bad.txt").exists(), "the culprit must be backed out of the tree"
 
@@ -166,7 +205,9 @@ def test_resume_after_a_culprit_does_not_remerge_it(tmp_path: Path) -> None:
     recs = _records(second)
     assert ("SURVIVOR", "later") in recs
     assert all(rec[1] != "bad" for rec in recs), "the culprit must not be retried"
-    assert ("SURVIVOR", "good") not in recs, "an already-finished survivor must not be re-merged"
+    assert ("SURVIVOR", "good") not in recs, (
+        "an already-finished survivor must not be re-merged"
+    )
     assert st["landed"].read_text() == "good\nlater\n"
 
 
@@ -179,7 +220,9 @@ def test_resume_does_not_re_baseline_or_reset_away_survivors(tmp_path: Path) -> 
     _replay(repo, st, stub)
     assert (repo / "good.txt").exists()
     _replay(repo, st, stub)
-    assert (repo / "good.txt").exists(), "a resume must not reset the tree back to the base ref"
+    assert (repo / "good.txt").exists(), (
+        "a resume must not reset the tree back to the base ref"
+    )
 
 
 def test_deadline_yields_with_progress_persisted_then_resumes(tmp_path: Path) -> None:
@@ -220,7 +263,7 @@ def test_deadline_is_clamped_below_the_tool_cap(tmp_path: Path) -> None:
 def test_a_conflict_drops_dependents_and_the_replay_continues(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     _land_branch(repo, "a", "f.txt", "from a\n")
-    _land_branch(repo, "base", "f.txt", "from base\n")   # conflicts with a
+    _land_branch(repo, "base", "f.txt", "from base\n")  # conflicts with a
     _land_branch(repo, "dep", "d.txt", "dep\n")
     st = _state(repo, "a", "base", "dep")
     graph = repo / "graph"
@@ -271,7 +314,9 @@ def test_a_mid_loop_gate_127_is_a_machine_fault_never_a_culprit(tmp_path: Path) 
     stub.chmod(0o755)
     r = _replay(repo, st, stub)
     assert r.returncode == 2, f"{r.stdout}\n{r.stderr}"
-    assert ("CULPRIT", "bad") not in _records(r), "a 127 must never be read as a content red"
+    assert ("CULPRIT", "bad") not in _records(r), (
+        "a 127 must never be read as a content red"
+    )
     assert "machine fault" in r.stderr
     assert st["landed"].read_text() == "good\n"
 

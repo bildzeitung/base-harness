@@ -16,6 +16,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 from conftest import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "scripts" / "drop-from-accepted.sh"

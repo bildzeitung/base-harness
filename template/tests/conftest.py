@@ -16,14 +16,13 @@ import functools
 import importlib.util
 import os
 import re
-import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
 import pytest
-
 from _fence_parsing import closes_fence, match_fence_marker
 
 #: Repo root -- tests/ lives directly under it.
@@ -79,6 +78,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "xdist and then re-invokes pytest as `-m serial -n 0`, so every test still runs exactly "
         "once.",
     )
+
 
 # today's corpus, measured, but not in general -- a `>>`-leading line double-strips to a
 # bare one -- and nothing strips twice any more. (tests/test_land_lock.py's independent
@@ -589,7 +589,7 @@ SWEEP_SKILL_BLOCKS = bash_fence_blocks(SWEEP_SKILL_TEXT)
 # element in the path; asyncio's ready-queue ordering is not perturbed by OS
 # starvation). Moved here verbatim from tests/test_tui_reconcile_screen.py
 # and tests/test_tui_browse_screen.py
-#, which had independently invented the same
+# , which had independently invented the same
 # fix twice with no cross-reference. Do not add a third dialect in a new test
 # file -- import one of these two instead.
 

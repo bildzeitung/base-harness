@@ -138,7 +138,9 @@ def test_non_numeric_widths_are_nproc_scaled_never_the_floor(
     Parametrized rather than looped so a regression names the exact width
     that broke, and so xdist can spread the five subprocess spawns."""
     cap = _cap(tmp_path, available_kib=30_408_704, nproc=24, workers=bad_width)
-    assert cap == "5", f"HARNESS_TEST_WORKERS={bad_width!r} -> {cap}, want nproc-scaled 5"
+    assert cap == "5", (
+        f"HARNESS_TEST_WORKERS={bad_width!r} -> {cap}, want nproc-scaled 5"
+    )
     assert cap != "12", (
         f"HARNESS_TEST_WORKERS={bad_width!r} collapsed to the 2GiB floor bug"
     )

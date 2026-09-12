@@ -58,8 +58,10 @@ template/               the files that get copied into your project
   .claude/skills/       code, land, challenge, epic-audit, sweep, release
   .claude/settings.json hooks, permissions, worktree config
   scripts/              the guards, gates, and lock machinery
-  tests/                939 tests that gate the harness's own mechanisms — they pass on a fresh install
+  tests/                1063 tests that gate the harness's own mechanisms — they pass on a fresh install
   noxfile.py            the gate sessions the agents invoke (nox -t fix / -s tests / -s lock_currency)
+  pyproject.toml        placeholder: no runtime deps, a dev extra with the gate tools — rename and fill in
+  requirements.lock     placeholder lock matching it — regenerate via scripts/compile-lock.sh
   docs/conventions.md   your project's style fiats (starts nearly empty — fill it in)
 install.sh              copies template/ into a target repo, with a dry-run mode
 ```
@@ -80,10 +82,12 @@ install.sh              copies template/ into a target repo, with a dry-run mode
 ./install.sh /path/to/your/project
 cd /path/to/your/project
 ./scripts/harness-doctor.sh
-./venv/bin/pytest tests -q        # 939 passed
+./venv/bin/pytest tests -q        # 1063 passed
 ```
 
 `install.sh` also runs `bd init` for you, non-interactively and with the harness's opinions
-(`--skip-agents`, `import.auto: false`) baked in. Then read
+(`--skip-agents`, `import.auto: false`) baked in, then builds `./venv` through
+`scripts/python-init.sh` (pinning the newest pyenv-installed CPython in `.python-version` first,
+when pyenv is present). Then read
 [`docs/getting-started.md`](docs/getting-started.md), which walks through the parts it does not do:
 `bd dolt push`, the first ticket, and the first `/code` run.

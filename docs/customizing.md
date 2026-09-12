@@ -179,7 +179,7 @@ them only after reading [architecture.md](architecture.md).
 - **You can drop the gate tests that cover skills you don't use** — the modules are independent and
   `tests/README.md` tiers them. What you should not drop are the markdown scanners: they are the only
   check on the bash *inside* the skills, which no linter reaches.
-- **The gate tests ship and pass, but they are pins.** `tests/` carries 40 test modules (939 tests) that
+- **The gate tests ship and pass, but they are pins.** `tests/` carries 42 test modules (1063 tests) that
   enforce the mechanisms above. Several assert on **exact strings** in the skill markdown, so a
   legitimate edit to a skill will fail one — deliberately: that failure is the review prompt. See
   `tests/README.md`.

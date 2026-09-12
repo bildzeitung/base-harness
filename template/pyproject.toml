@@ -1,0 +1,39 @@
+# Placeholder shipped by the agent harness -- rename the project and add your
+# runtime dependencies. Keep the `dev` extra's tools: noxfile.py's gate sessions
+# invoke them by path under ./venv/bin, and scripts/check_links.py and friends
+# import typer.
+#
+# scripts/python-init.sh installs `.[dev]` EDITABLE on top of requirements.lock,
+# so this file must stay editable-installable. The empty `packages` list is
+# what lets it install before any source package exists; replace it with yours.
+# After any dependency change, regenerate the lock:
+#   ./venv/bin/uv --version >/dev/null && scripts/compile-lock.sh -o requirements.lock
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-project"   # <rename>
+version = "0.0.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "nox",
+  "pytest",
+  "pytest-xdist",
+  "ruff",
+  "typer",
+]
+
+[tool.setuptools]
+packages = []
+
+# Pinned so `nox -t fix` behaves the same on every machine: ruff otherwise
+# takes its line length from whichever config it finds walking up from the
+# file, and the shipped tests/ are formatted at this width.
+[tool.ruff]
+line-length = 88
+target-version = "py311"

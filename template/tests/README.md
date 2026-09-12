@@ -33,9 +33,9 @@ nothing.
 
 ## Do I need all of them?
 
-The suite is 40 modules / 939 tests / ~90s. The test *count* is mostly parametrisation —
-`test_gh_write_guard` alone contributes ~174 cases, one per `gh` command form, in 1.4s. Count is not
-cost.
+The suite is 42 modules / 1063 tests / under a minute with 8 workers. The test *count* is mostly
+parametrisation — `test_gh_write_guard` alone contributes 335 cases, one per `gh` command form, in
+about ten seconds. Count is not cost.
 
 Every module covers a script or skill the harness actually invokes; there is no dead weight to
 delete. What is genuinely optional is **whatever gates a skill you don't use**. The modules are

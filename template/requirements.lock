@@ -1,0 +1,6 @@
+# Placeholder lock shipped by the agent harness. pyproject.toml declares no
+# runtime dependencies yet, so there is nothing to pin: scripts/python-init.sh's
+# hash-verified install of this file is a no-op, and the dev tools come from the
+# editable `.[dev]` step that follows it. Regenerate the moment you add a
+# runtime dependency (the command reads .python-version, so pin that first):
+#   scripts/compile-lock.sh -o requirements.lock

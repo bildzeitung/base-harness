@@ -26,8 +26,8 @@ prerequisites and filling in your own project's `CLAUDE.md`.
 
 The target does not need to be a git repository yet: the installer runs `git init -b main` if it
 isn't one. `install.sh` never overwrites an existing file unless you pass `--force`. After copying
-it runs `bd init` for you, non-interactively (see step 2). It does **not** create a venv or publish
-the tracker; those are steps you should run and see.
+it runs `bd init` for you, non-interactively (see step 2), then builds `./venv` (see step 3). It
+does **not** publish the tracker; that needs a git origin and is yours to run.
 
 If your repo's default branch isn't `main`, the installer says so and stops short of rewriting
 anything — see [customizing.md](customizing.md#default-branch-name).
@@ -69,13 +69,25 @@ What remains is yours to run, because it needs a git origin:
 bd dolt push          # publishes over refs/dolt/data on your git remote
 ```
 
-## 3. Build the Python environment
+## 3. The Python environment (done by `install.sh`)
 
-```bash
-./scripts/python-init.sh
-```
+The installer runs `./scripts/python-init.sh` for you, which creates `./venv` at the repo root and
+installs `requirements.lock` plus the `dev` extra of `pyproject.toml`. Both files ship as
+placeholders: no runtime dependencies, and a `dev` extra holding the gate tools (`nox`, `pytest`,
+`pytest-xdist`, `ruff`, `typer`). Rename the project and add your dependencies in step 5, then
+regenerate the lock with `scripts/compile-lock.sh -o requirements.lock`. If your repo already had a
+`pyproject.toml`, the installer leaves it and the lock alone and builds the venv with `--unlocked`.
 
-This creates `./venv` at the repo root and installs from `requirements.lock` if present.
+Two things the installer does around that, both only when they apply:
+
+- **pyenv users get a `.python-version`.** Under pyenv, `python` is a shim, and with no pin and a
+  global of `system` the first `python -m venv` fails with `pyenv: python: command not found`. If
+  pyenv is on your PATH and the repo has no pin, the installer writes the newest CPython you have
+  installed. Commit the file: `scripts/compile-lock.sh` reads it too. An existing pin is never
+  touched.
+- **No python 3.11+ means the step is skipped, not failed.** The installer says so and the files
+  are all in place; install a Python (`pyenv install 3`, then re-run the installer to pin it) and
+  run `./scripts/python-init.sh` yourself.
 
 A template `noxfile.py` ships with the harness, defining the three handles the agent files invoke by
 name — the `fix` **tag** (`nox -t fix`), the `tests` **session** (`nox -s tests`), and
@@ -92,7 +104,7 @@ them as opaque gate commands behind a 0/1/2 exit contract; see
 Then run the harness's own gate tests — they ship green and need no project code:
 
 ```bash
-./venv/bin/pytest tests -q        # 939 passed
+./venv/bin/pytest tests -q        # 1063 passed
 ```
 
 `harness-doctor.sh` checks prerequisites, guard scripts, agents and skills, hook wiring, the
@@ -101,7 +113,7 @@ going further; **warn** lines are informational.
 
 ## 5. Fill in the placeholders
 
-Three files ship as templates with `<angle bracket>` placeholders:
+Four files ship as templates with `<angle bracket>` placeholders:
 
 - **`CLAUDE.md`** — the "What this is" section, your commit attribution line, and the list of design
   docs. Everything else is harness contract you should leave alone until you've read
@@ -109,6 +121,9 @@ Three files ship as templates with `<angle bracket>` placeholders:
 - **`docs/conventions.md`** — delete the two example fiats and write your own. Keep the litmus in
   the preamble: if a rule earns a *why*, it belongs in a design doc, not here.
 - **`docs/design.md`** — create it. `CLAUDE.md` points agents there first.
+- **`pyproject.toml`** — the project name, your runtime dependencies, and your package in place of
+  the empty `packages` list. Keep the `dev` extra's tools; then regenerate `requirements.lock`
+  (step 3).
 
 Also create `docs/decisions.md` (open questions) and `docs/configuration.md` (tunables), even if
 they start nearly empty. The agents are instructed to route knowledge into them, and a missing file

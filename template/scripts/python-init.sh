@@ -32,7 +32,12 @@ for arg in "$@"; do
     esac
 done
 
-python -m venv venv
+# `python` first (the pyenv shim, or a distro that ships the alias), then
+# python3 for the distros that do not. Under pyenv the shim only resolves once
+# .python-version exists; install.sh writes it when pyenv is present.
+PY=python
+command -v python >/dev/null 2>&1 || PY=python3
+"$PY" -m venv venv
 . ./venv/bin/activate
 
 # shellcheck source=venv-install.sh
