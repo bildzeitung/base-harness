@@ -76,7 +76,12 @@ while IFS= read -r rel; do
     # the source tree is the authority on what is meant to be runnable.
     [ -x "$src" ] && chmod +x "$dst"
   fi
-done < <(cd "$TEMPLATE" && find . -type f | sed 's#^\./##' | sort)
+done < <(
+  # Prune Python bytecode caches: running the template's own tests in place
+  # leaves __pycache__/ behind, and stale .pyc files must never be installed.
+  cd "$TEMPLATE" && find . \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' \) -prune -o -type f -print \
+    | sed 's#^\./##' | sort
+)
 
 echo
 echo "install: $copied new, $overwritten overwritten, $skipped skipped"
