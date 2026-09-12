@@ -29,8 +29,8 @@ isn't one. `install.sh` never overwrites an existing file unless you pass `--for
 it runs `bd init` for you, non-interactively (see step 2), then builds `./venv` (see step 3). If
 the repo has no git remote and `gh` is logged in, it also creates a **private** GitHub repository
 named after the target directory (no wiki, no issues — the tracker is beads) and adds it as `origin`;
-pass `--skip-remote` to opt out, and any existing remote is left alone. It does **not** publish the
-tracker; that is yours to run.
+pass `--skip-remote` to opt out, and any existing remote is left alone. With an `origin` in place it
+publishes the tracker over it (see step 2).
 
 If your repo's default branch isn't `main`, the installer says so and stops short of rewriting
 anything — see [customizing.md](customizing.md#default-branch-name).
@@ -66,12 +66,16 @@ You will find two commits on your branch afterwards: bd's own `bd init: initiali
 tracking`, and the installer's `chore: pin beads import.auto=false`. If `.beads/` already exists the
 installer leaves the tracker entirely alone, and `--skip-bd-init` skips this step outright.
 
-What remains is yours to run. It needs a git origin, which the installer created for you if `gh`
-was available and the repo had none (push your branch to it first):
+**Publishing is done for you too**, when the repo has an `origin` (created by the installer via
+`gh`, or already there). `bd init` points the Dolt remote at it, and the installer runs
+`scripts/bd-dolt-push.sh`, which puts the tracker on the wire as `refs/dolt/data`. Dolt refuses to
+push to a git remote with no branches, so if `origin` was empty the installer pushes your branch
+first; a remote that already has branches is not pushed to, since merging is your call. If there was
+no `origin`, add one and run it yourself:
 
 ```bash
-git push -u origin main
-bd dolt push          # publishes over refs/dolt/data on your git remote
+git push -u origin main          # only if the remote is empty
+./scripts/bd-dolt-push.sh        # publishes over refs/dolt/data
 ```
 
 ## 3. The Python environment (done by `install.sh`)

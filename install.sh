@@ -10,9 +10,10 @@
 # "python" below), then builds ./venv through scripts/python-init.sh when a
 # python >= 3.11 resolves there (see "venv" below). If the repo has no git
 # remote and `gh` is on PATH, it creates a private GitHub repository named
-# after the target directory and adds it as origin (see "remote" below). It
-# does NOT publish the tracker (`bd dolt push`); docs/getting-started.md walks
-# through that.
+# after the target directory and adds it as origin (see "remote" below). With
+# a tracker it just initialised and an origin to push to, it then publishes the
+# tracker: pushes the branch if the remote is empty (Dolt refuses a remote with
+# no branches), then runs scripts/bd-dolt-push.sh (see "publish" below).
 #
 # Usage:
 #   ./install.sh /path/to/repo [--dry-run] [--force] [--prefix <id-prefix>] [--skip-bd-init] [--skip-remote]
@@ -45,7 +46,7 @@ for arg in "$@"; do
     --prefix)       want_prefix=1 ;;
     --prefix=*)     PREFIX="${arg#--prefix=}" ;;
     -h|--help)
-      sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     -*) echo "install: unknown option '$arg'" >&2; exit 1 ;;
@@ -190,6 +191,7 @@ echo "install: $copied new, $overwritten overwritten, $skipped skipped"
 # is in history before the first ticket exists.
 echo
 echo "tracker"
+BD_INITED=0
 if [ "$SKIP_BD" = 1 ]; then
   echo "  SKIP      bd init (--skip-bd-init)"
 elif [ -e "$TARGET/.beads" ]; then
@@ -197,6 +199,7 @@ elif [ -e "$TARGET/.beads" ]; then
 elif [ "$DRY_RUN" = 1 ]; then
   echo "  would run bd init --non-interactive --role maintainer --skip-agents --prefix $PREFIX"
   echo "  would set import.auto: false in .beads/config.yaml and commit it"
+  BD_INITED=dry
 else
   bd_out="$(mktemp)" || exit 2
   if ! (cd "$TARGET" && BD_NON_INTERACTIVE=1 bd init --non-interactive --role maintainer --skip-agents --prefix "$PREFIX") >"$bd_out" 2>&1; then
@@ -214,6 +217,7 @@ else
     exit 2
   fi
   printf '  ran       bd init --non-interactive --role maintainer --skip-agents --prefix %s\n' "$PREFIX"
+  BD_INITED=1
 
   cfg="$TARGET/.beads/config.yaml"
   [ -f "$cfg" ] || { echo "install: bd init reported success but $cfg is missing" >&2; exit 2; }
@@ -374,6 +378,73 @@ else
   fi
 fi
 
+# ---- publish -------------------------------------------------------------------
+#
+# The tracker's wire is refs/dolt/data on the git origin, and `bd init` above
+# already pointed the Dolt remote at it. Only a tracker THIS run initialised is
+# pushed: an existing .beads/ was left alone above, and publishing it is the
+# same decision. Dolt refuses to push to a git remote with no branches at all
+# ("initialize the repository with an initial branch/commit first"), so an
+# empty remote -- the just-created GitHub repo, or any fresh bare repo -- gets
+# the branch pushed first. A remote that already has branches is left as it
+# is: pushing the branch there is a merge decision, not setup. The push goes
+# through scripts/bd-dolt-push.sh, the harness's guarded chokepoint, not bare
+# `bd dolt push`.
+echo
+echo "publish"
+TRACKER_PUSHED=0
+BRANCH_PUSHED=0
+# Is there an origin -- or, on a dry run, would the remote step above have made one?
+origin_present=0
+[ "$GIT_INITED" != dry ] && git -C "$TARGET" remote get-url origin >/dev/null 2>&1 && origin_present=1
+if [ "$origin_present" = 0 ] && [ "$DRY_RUN" = 1 ] && [ "$SKIP_REMOTE" != 1 ] && command -v gh >/dev/null 2>&1; then
+  if [ "$GIT_INITED" = dry ] || [ -z "$(git -C "$TARGET" remote 2>/dev/null)" ]; then
+    origin_present=dry
+  fi
+fi
+if [ "$BD_INITED" = 0 ]; then
+  echo "  SKIP      bd dolt push (tracker not initialised by this run)"
+elif [ "$origin_present" = 0 ]; then
+  echo "  SKIP      bd dolt push (no origin remote; run ./scripts/bd-dolt-push.sh once there is one)"
+elif [ "$DRY_RUN" = 1 ]; then
+  echo "  would push the branch to origin if the remote has no branches yet"
+  echo "  would run ./scripts/bd-dolt-push.sh"
+else
+  branch="$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")"
+  heads="$(git -C "$TARGET" ls-remote --heads origin 2>&1)" || {
+    echo "install: cannot reach origin to publish the tracker:" >&2
+    printf '%s\n' "$heads" | sed 's/^/    /' >&2
+    echo "install: everything else is in place. Fix the remote, then run ./scripts/bd-dolt-push.sh by hand." >&2
+    exit 2
+  }
+  if [ -z "$heads" ]; then
+    if [ -z "$branch" ]; then
+      echo "install: origin is empty and HEAD is not on a branch; cannot push. Push a branch, then run ./scripts/bd-dolt-push.sh by hand." >&2
+      exit 2
+    fi
+    if git -C "$TARGET" push -q -u origin "$branch" >/dev/null 2>&1; then
+      echo "  pushed    $branch -> origin (remote was empty; Dolt needs a branch there)"
+      BRANCH_PUSHED=1
+    else
+      echo "install: git push -u origin $branch failed; cannot publish the tracker to an empty remote." >&2
+      echo "install: everything else is in place. Push the branch, then run ./scripts/bd-dolt-push.sh by hand." >&2
+      exit 2
+    fi
+  fi
+  push_out="$(mktemp)" || exit 2
+  if (cd "$TARGET" && ./scripts/bd-dolt-push.sh) >"$push_out" 2>&1; then
+    rm -f "$push_out"
+    echo "  ran       ./scripts/bd-dolt-push.sh (refs/dolt/data is on origin)"
+    TRACKER_PUSHED=1
+  else
+    echo "install: scripts/bd-dolt-push.sh failed:" >&2
+    sed 's/^/    /' "$push_out" >&2
+    rm -f "$push_out"
+    echo "install: everything else is in place. Fix the cause, then run ./scripts/bd-dolt-push.sh by hand." >&2
+    exit 2
+  fi
+fi
+
 if [ "$DRY_RUN" = 1 ]; then
   echo
   echo "install: dry run complete — re-run without --dry-run to apply"
@@ -402,18 +473,22 @@ if [ "$VENV_SKIPPED" = 1 ]; then
   echo "         ./scripts/python-init.sh before step 3 below."
 fi
 
-if [ "$REMOTE_CREATED" = 1 ]; then
+if [ "$REMOTE_CREATED" = 1 ] && [ "$BRANCH_PUSHED" = 0 ]; then
   echo
-  echo "install: origin is a new, empty GitHub repository -- push the branch first:"
+  echo "install: origin is a new, empty GitHub repository -- push the branch:"
   echo "           git -C $TARGET push -u origin ${DEFAULT_BRANCH:-main}"
 fi
 
+echo
+echo "install: next steps (see docs/getting-started.md for the full walkthrough)"
+echo
+echo "  1. Install prerequisites:      jq, (docker for diagram validation)"
+if [ "$TRACKER_PUSHED" = 1 ]; then
+  echo "  2. Publish the tracker:        done (refs/dolt/data is on origin)"
+else
+  echo "  2. Publish the tracker:        ./scripts/bd-dolt-push.sh   (needs a git origin with a branch)"
+fi
 cat <<'NEXT'
-
-install: next steps (see docs/getting-started.md for the full walkthrough)
-
-  1. Install prerequisites:      jq, (docker for diagram validation)
-  2. Publish the tracker:        bd dolt push        (needs a git origin)
   3. Check the install:          ./scripts/harness-doctor.sh && ./venv/bin/pytest tests -q
   4. Fill in the placeholders:   CLAUDE.md, pyproject.toml, docs/conventions.md, docs/design.md
   5. File your first ticket, then run /code
