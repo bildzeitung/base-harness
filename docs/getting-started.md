@@ -148,7 +148,8 @@ Four files ship as templates with `<angle bracket>` placeholders:
   [architecture.md](architecture.md).
 - **`docs/conventions.md`** — delete the two example fiats and write your own. Keep the litmus in
   the preamble: if a rule earns a *why*, it belongs in a design doc, not here.
-- **`docs/design.md`** — create it. `CLAUDE.md` points agents there first.
+- **`docs/design.md`** — fill in the sections. It ships as a skeleton with the expected headings;
+  `CLAUDE.md` points agents there first.
 - **`pyproject.toml`** — the project name, your runtime dependencies (`uv add`), and a
   `[build-system]` once you have a package of your own to install. Keep the `dev` group's tools;
   `uv add` keeps `uv.lock` current as you go (step 3).
