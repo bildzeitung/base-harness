@@ -18,7 +18,15 @@ example, and scripts/validate-mermaid.sh the shell-side reference.
 
 Replace the bodies with your project's real tooling; keep the NAMES and the `fix`
 tag, since the agent files invoke `nox -t fix`, `nox -s tests`,
-`nox -s lock_currency` and `nox -s shellcheck` by those exact handles.
+`nox -s harness_tests`, `nox -s lock_currency` and `nox -s shellcheck` by those
+exact handles.
+
+Two test sessions, two audiences. `tests` is YOUR suite: it runs on every gate
+and ignores tests/harness/. `harness_tests` is the harness's own suite under
+tests/harness/, which only changes verdict when scripts/, .claude/,
+tests/harness/, noxfile.py or pyproject.toml change -- so the agents reach it
+through scripts/harness-tests-gate.sh, which runs it only when the branch
+touched one of those paths, and the installer / harness-doctor run it whole.
 """
 
 from __future__ import annotations
@@ -56,18 +64,23 @@ def format_and_lint(session: nox.Session) -> None:
     session.run(_venv_tool("ruff"), "check", "--fix", ".", external=True)
 
 
-@nox.session
-def tests(session: nox.Session) -> None:
-    """The test suite.
+#: pytest's "no tests collected" status. The project suite is empty on a fresh
+#: install (tests/ holds only the harness's own tests/harness/, which `tests`
+#: ignores), and an empty suite is a pass, not a red gate -- the agents run
+#: `nox -s tests` before the project has written its first test.
+_PYTEST_NO_TESTS_COLLECTED = 5
 
-    Two invocations that exhaustively partition the suite on
-    ``@pytest.mark.serial`` (registered in tests/conftest.py): everything else
-    in the pytest-xdist parallel pool, then the serial tests with no workers at
-    all. A ``serial`` test asserts a wall-clock budget that sibling workers'
-    scheduler noise would make flaky. No test is skipped and none runs twice —
-    the partition is the only thing the marker changes.
+
+def _run_partitioned(session: nox.Session, *paths: str, empty_ok: bool) -> None:
+    """Two invocations that exhaustively partition a suite on
+    ``@pytest.mark.serial`` (registered in tests/harness/conftest.py):
+    everything else in the pytest-xdist parallel pool, then the serial tests
+    with no workers at all. A ``serial`` test asserts a wall-clock budget that
+    sibling workers' scheduler noise would make flaky. No test is skipped and
+    none runs twice -- the partition is the only thing the marker changes.
     """
     pytest = _venv_tool("pytest")
+    ok = [0, _PYTEST_NO_TESTS_COLLECTED] if empty_ok else [0]
     session.run(
         pytest,
         "-q",
@@ -75,12 +88,51 @@ def tests(session: nox.Session) -> None:
         "not serial",
         "-n",
         TEST_WORKERS,
+        *paths,
         *session.posargs,
         external=True,
+        success_codes=ok,
     )
     session.run(
-        pytest, "-q", "-m", "serial", "-n", "0", *session.posargs, external=True
+        pytest,
+        "-q",
+        "-m",
+        "serial",
+        "-n",
+        "0",
+        *paths,
+        *session.posargs,
+        external=True,
+        success_codes=ok,
     )
+
+
+@nox.session
+def tests(session: nox.Session) -> None:
+    """The PROJECT's test suite -- everything pytest collects from the repo
+    root except tests/harness/, which is the harness's own suite and has its
+    own session below. Runs on every gate.
+
+    Exit 5 (nothing collected) passes: a fresh install has no project tests
+    yet, and the gates must be green before the first one is written.
+    """
+    _run_partitioned(session, "--ignore=tests/harness", empty_ok=True)
+
+
+@nox.session
+def harness_tests(session: nox.Session) -> None:
+    """The harness's own gate tests under tests/harness/ -- guard-script
+    behaviour, the skill-markdown scanners, hook wiring. See
+    tests/harness/README.md for what they pin and why.
+
+    Not run on every gate: `scripts/harness-tests-gate.sh` invokes this
+    session only when the branch touched a harness path (scripts/, .claude/,
+    tests/harness/, noxfile.py, pyproject.toml). The installer and
+    `harness-doctor.sh` point at it whole. An empty tests/harness/ is a
+    finding here, not a pass -- a project that dropped the suite should also
+    drop the gate script's call sites.
+    """
+    _run_partitioned(session, "tests/harness", empty_ok=False)
 
 
 @nox.session
@@ -89,12 +141,16 @@ def shellcheck(session: nox.Session) -> None:
 
     The set is discovered from git, never listed here: the harness's guards
     and gates are shell, and a script that fell outside a hand-kept roster
-    would be exactly the one nobody linted. `-x` follows the `. "$(dirname
+    would be exactly the one nobody linted. `-co --exclude-standard` takes
+    untracked-but-not-ignored files too, so a fresh install lints its scripts
+    before the first commit instead of finding an empty set. `-x` follows the `. "$(dirname
     "$0")/lib.sh"` sources the scripts use; the `shellcheck source=` comments
     in each file tell it where to look.
     """
     tracked = subprocess.run(
-        ["git", "ls-files", "-z", "*.sh"], capture_output=True, check=True
+        ["git", "ls-files", "-z", "-co", "--exclude-standard", "--", "*.sh"],
+        capture_output=True,
+        check=True,
     ).stdout.decode()
     files = [f for f in tracked.split("\0") if f]
     if not files:

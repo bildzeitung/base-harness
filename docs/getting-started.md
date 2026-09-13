@@ -96,7 +96,8 @@ The everyday commands, all through `uv`:
 ```bash
 uv sync                          # (re)build ./.venv from uv.lock
 uv run --frozen nox -t fix       # format + lint
-uv run --frozen nox -s tests     # the test suite
+uv run --frozen nox -s tests     # your test suite (everything except tests/harness/)
+uv run --frozen nox -s harness_tests   # the harness's own gate tests under tests/harness/
 uv add <pkg>                     # add a runtime dependency; updates pyproject.toml and uv.lock
 uv lock --upgrade-package <pkg>  # move one pin; scripts/update-deps.sh does this gated, with a diff
 ```
@@ -110,8 +111,10 @@ place; [install uv](https://docs.astral.sh/uv/getting-started/installation/) and
 yourself.
 
 A template `noxfile.py` ships with the harness, defining the handles the agent files invoke by
-name — the `fix` **tag** (`nox -t fix`), the `tests` **session** (`nox -s tests`), `lock_currency`,
-and `shellcheck` (lints every tracked `.sh` file through the venv's `shellcheck-py`). Replace the bodies with your real tooling but **keep the names**. The harness treats
+name — the `fix` **tag** (`nox -t fix`), the `tests` **session** (`nox -s tests`, your suite),
+`harness_tests` (the harness's own suite under `tests/harness/`, reached on a gate through
+`scripts/harness-tests-gate.sh` only when a branch touched a harness path), `lock_currency`, and
+`shellcheck` (lints every `.sh` file through the venv's `shellcheck-py`). Replace the bodies with your real tooling but **keep the names**. The harness treats
 them as opaque gate commands behind a 0/1/2 exit contract; see
 [customizing.md](customizing.md#quality-gates).
 
@@ -121,11 +124,16 @@ them as opaque gate commands behind a 0/1/2 exit contract; see
 ./scripts/harness-doctor.sh
 ```
 
-Then run the harness's own gate tests — they ship green and need no project code:
+Then run the harness's own gate tests — they ship green, need no project code, and need no commit
+yet (the scan-scope checks count untracked files too):
 
 ```bash
-uv run --frozen pytest tests -q   # 1063 passed
+uv run --frozen nox -s harness_tests   # 988 passed
 ```
+
+`nox -s tests` is *your* suite and passes empty on a fresh install (pytest's "no tests collected"
+is a pass there, not a red gate). Put your tests under `tests/`; the harness's live under
+`tests/harness/` and `nox -s tests` ignores that directory.
 
 `harness-doctor.sh` checks prerequisites, guard scripts, agents and skills, hook wiring, the
 auto-import invariant, gate-test presence, and `.gitignore` coverage. It is read-only — it reports, it never repairs. Fix every **FAIL** before

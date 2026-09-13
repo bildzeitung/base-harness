@@ -65,10 +65,18 @@ The three invocations to substitute, all appearing in `.claude/agents/coding.md`
 
 ```bash
 uv run --frozen nox -t fix             # format + lint, fixing in place
-uv run --frozen nox -s tests           # the test suite
+uv run --frozen nox -s tests           # YOUR test suite (ignores tests/harness/)
+scripts/harness-tests-gate.sh --base-ref origin/main   # the harness's suite, only if the branch touched a harness path
 uv run --frozen nox -s lock_currency   # dependency-lock currency (optional; keep it LAST in /land's && chain)
 uv run --frozen nox -s shellcheck      # every tracked .sh file, via the venv's shellcheck-py
 ```
+
+`harness-tests-gate.sh` is what keeps `tests/harness/` off your per-gate bill: it runs
+`nox -s harness_tests` only when the working tree differs from the merge-base under `scripts/`,
+`.claude/`, `tests/harness/`, `noxfile.py`, `pyproject.toml` or `uv.lock`, and otherwise prints
+one line and exits 0. Those tests test the harness, so nothing else can change their verdict. If
+you drop `tests/harness/` altogether, the gate script notes that and exits 0; drop its call sites
+too, or leave them — either is fine.
 
 Two rules travel with whatever you substitute:
 
@@ -180,12 +188,14 @@ them only after reading [architecture.md](architecture.md).
   you're deciding whether you may change a predicate; it just no longer cites ticket ids. The
   executable code is unmodified apart from the branch-name and project-name substitutions.
 - **You can drop the gate tests that cover skills you don't use** — the modules are independent and
-  `tests/README.md` tiers them. What you should not drop are the markdown scanners: they are the only
-  check on the bash *inside* the skills, which no linter reaches.
-- **The gate tests ship and pass, but they are pins.** `tests/` carries 42 test modules (1063 tests) that
-  enforce the mechanisms above. Several assert on **exact strings** in the skill markdown, so a
-  legitimate edit to a skill will fail one — deliberately: that failure is the review prompt. See
-  `tests/README.md`.
+  `tests/harness/README.md` tiers them. What you should not drop are the markdown scanners: they are
+  the only check on the bash *inside* the skills, which no linter reaches.
+- **The gate tests ship and pass, but they are pins.** `tests/harness/` carries 37 test modules
+  (988 tests) that enforce the mechanisms above. Several assert on **exact strings** in the skill
+  markdown, so a legitimate edit to a skill will fail one — deliberately: that failure is the review
+  prompt. See `tests/harness/README.md`. Six further modules that only gate the harness's *own*
+  development (suite DRY-ness, cross-file drift between frozen harness files, the doctor, unwired
+  tooling) live in the export's `dev-tests/` and are not installed.
 - **`scripts/docs_index_*.py`, `check_links.py`, and `check_docstring_refs.py`** are included as
   generically useful tooling but are not wired into any skill. They assume a `docs/` tree; read each
   script's header before adopting it.

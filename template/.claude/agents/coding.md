@@ -291,7 +291,8 @@ git worktree unlock "$(git rev-parse --show-toplevel)"
 
 ```bash
 uv run --frozen nox -t fix        # format + lint (fixes in place)
-uv run --frozen nox -s tests      # pytest
+uv run --frozen nox -s tests      # pytest -- the project's suite
+scripts/harness-tests-gate.sh --base-ref origin/main   # the harness's own suite, only if I touched scripts/, .claude/, tests/harness/ or the build files
 ```
 
 **Every tool runs through `uv run --frozen` — never `. .venv/bin/activate`, never a bare `nox`.**
@@ -474,6 +475,7 @@ Same gates, same FOREGROUND-only rule:
 ```bash
 uv run --frozen nox -t fix      # uv builds this worktree's ./.venv on first use
 uv run --frozen nox -s tests
+scripts/harness-tests-gate.sh --base-ref origin/main   # skips itself unless a harness path changed
 scripts/validate-mermaid.sh     # only if a docs/ diagram is in the branch
 ```
 

@@ -58,7 +58,8 @@ This is a [uv](https://docs.astral.sh/uv/) project. `uv` owns the interpreter, t
 ```bash
 uv sync                          # build ./.venv from uv.lock (uv run does this on demand too)
 uv run --frozen nox -t fix       # format + lint
-uv run --frozen nox -s tests     # the test suite
+uv run --frozen nox -s tests     # the project's test suite (ignores tests/harness/)
+uv run --frozen nox -s harness_tests   # the harness's own gate tests (tests/harness/); gates reach it via scripts/harness-tests-gate.sh
 uv add <pkg>                     # add a runtime dependency (updates pyproject.toml AND uv.lock)
 scripts/update-deps.sh           # move the lock past what pyproject.toml forces, gated
 ```

@@ -3,8 +3,10 @@
 # /land's isolation replay: on a RED combined re-gate, replay the accepted set
 # one branch at a time, re-gating after each, to attribute the red to a branch.
 #
-# RESUMABLE BY DESIGN. Per branch this runs three gate sessions, plus three
-# baseline runs before the loop -- `3 + 3N` full gate invocations. A single Bash
+# RESUMABLE BY DESIGN. Per branch this runs four gate sessions (fix, tests,
+# harness-tests-gate, lock_currency), plus four baseline runs before the loop
+# -- `4 + 4N` gate invocations, though the harness gate answers in constant
+# time unless the branch touched a harness path (see that script). A single Bash
 # tool call is capped at 600s and the harness forbids backgrounding a gate, so a
 # straight-through loop hits that ceiling at a modest queue size, mid-loop. The
 # consequence is not merely a failed pass: nothing gets attributed, so nothing is
@@ -126,10 +128,14 @@ GATE_CMD="${LAND_GATE_CMD:-}"
 run_gate() {
   if [ -n "$GATE_CMD" ]; then "$GATE_CMD" "$1"; return $?; fi
   case "$1" in
-    fix)   uv run --frozen --directory "$TOP" nox -t fix ;;
-    tests) uv run --frozen --directory "$TOP" nox -s tests ;;
-    lock)  uv run --frozen --directory "$TOP" nox -s lock_currency ;;
-    *)     return 2 ;;
+    fix)     uv run --frozen --directory "$TOP" nox -t fix ;;
+    tests)   uv run --frozen --directory "$TOP" nox -s tests ;;
+    # The harness's own suite, only if the tree touched a harness path against
+    # $BASE_REF. `--always` (the baseline) runs it regardless: a bare base ref
+    # has no diff, and a diff-driven skip would baseline nothing.
+    harness) "$TOP/scripts/harness-tests-gate.sh" --base-ref "$BASE_REF" "${@:2}" ;;
+    lock)    uv run --frozen --directory "$TOP" nox -s lock_currency ;;
+    *)       return 2 ;;
   esac
 }
 
@@ -181,6 +187,14 @@ if [ "$(state_get baselined)" != "1" ]; then
   EST=$(( $(date +%s) - b0 )); [ "$EST" -lt 5 ] && EST=5
   state_set est "$EST"
 
+  run_gate harness --always; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "GATE COULD NOT RUN: the harness's own suite (harness-tests-gate --always) is red on bare" >&2
+    echo "$BASE_REF (exit $rc), before any branch merged. Not attributable to the accepted set." >&2
+    echo "Land nothing." >&2
+    exit 2
+  fi
+
   run_gate lock; rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "GATE COULD NOT RUN: lock_currency is red on bare $BASE_REF (exit $rc), before any" >&2
@@ -224,8 +238,10 @@ for id in $(cat "$ACCEPTED"); do
       ;;
   esac
 
-  # Deadline: never START work whose gates are predicted to cross it. Three gate
-  # sessions per branch, so budget 3 * EST.
+  # Deadline: never START work whose gates are predicted to cross it. Four gate
+  # sessions per branch, but the harness gate is a constant-time skip unless the
+  # branch touched a harness path, and EST already measures fix+tests(+harness),
+  # so 3 * EST stays a safe over-estimate.
   now="$(date +%s)"
   if [ $(( now - START + (3 * EST) )) -gt "$DEADLINE" ]; then
     left="$(remaining_count)"
@@ -270,8 +286,9 @@ for id in $(cat "$ACCEPTED"); do
   esac
 
   g0="$(date +%s)"
-  run_gate fix;   fix_rc=$?
-  run_gate tests; tests_rc=$?
+  run_gate fix;     fix_rc=$?
+  run_gate tests;   tests_rc=$?
+  run_gate harness; harness_rc=$?   # constant-time skip unless this branch touched the harness
   EST=$(( $(date +%s) - g0 )); [ "$EST" -lt 5 ] && EST=5
   state_set est "$EST"
 
@@ -280,7 +297,7 @@ for id in $(cat "$ACCEPTED"); do
   # is the MACHINE, not this branch: stop the whole replay rather than back
   # out and bounce an innocent branch on a bootstrap gap. The merge is left in
   # place because its fate is unknown, not judged.
-  for rc in "$fix_rc" "$tests_rc"; do
+  for rc in "$fix_rc" "$tests_rc" "$harness_rc"; do
     case "$rc" in
       0|1) ;;
       *)
@@ -290,7 +307,7 @@ for id in $(cat "$ACCEPTED"); do
         ;;
     esac
   done
-  if [ "$fix_rc" -eq 1 ] || [ "$tests_rc" -eq 1 ]; then
+  if [ "$fix_rc" -eq 1 ] || [ "$tests_rc" -eq 1 ] || [ "$harness_rc" -eq 1 ]; then
     git reset --hard HEAD~1 >/dev/null || exit 2   # back the culprit out
     mark_done "$id"
     printf 'CULPRIT\t%s\n' "$id"
