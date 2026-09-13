@@ -96,6 +96,7 @@ scripts/drop-from-accepted.sh
 scripts/land-heartbeat.sh
 scripts/land-merge-batch.sh
 scripts/land-replay.sh
+scripts/harness-tests-gate.sh
 scripts/stacked-graph.sh
 scripts/worktree-gc-sweep.sh
 "
@@ -190,13 +191,13 @@ fi
 
 echo
 echo "gate tests"
-set -- tests/test_*.py
+set -- tests/harness/test_*.py
 if [ -e "$1" ]; then
-  ok "tests/ present ($# gate test modules) -- run: uv run --frozen pytest tests -q"
+  ok "tests/harness/ present ($# gate test modules) -- run: uv run --frozen nox -s harness_tests"
 else
   # Not a hard failure: a project may deliberately drop them. But say so loudly,
   # because without them every mechanism below is prose-enforced only.
-  warn "tests/ has no gate tests -- the harness's own invariants are unenforced"
+  warn "tests/harness/ has no gate tests -- the harness's own invariants are unenforced"
 fi
 
 echo

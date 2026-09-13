@@ -41,9 +41,11 @@ overlapping itself. Everything else pushes a `land/<id>` branch and stops.
 **3. Guards are scripts, not sentences, and the scripts are themselves tested.** "Don't edit files on the default branch" is an instruction
 an agent will violate under load. `scripts/isolation-guard.sh` is a command that exits 1. Every rule
 in this harness that matters is a `PreToolUse` hook or a script an agent must run and check, because
-prose is advice and an exit code is a fence. `tests/` then gates the guards — including scanners
-that read the skills' *markdown*, since the bash an agent executes out of a `SKILL.md` is reachable
-by no linter.
+prose is advice and an exit code is a fence. `tests/harness/` then gates the guards — including
+scanners that read the skills' *markdown*, since the bash an agent executes out of a `SKILL.md` is
+reachable by no linter. Those tests test the harness, never your project, so they run on a gate
+only when a branch touched a harness path (`scripts/harness-tests-gate.sh`); your own suite under
+`tests/` runs every time.
 
 ## What's here
 
@@ -58,12 +60,15 @@ template/               the files that get copied into your project
   .claude/skills/       code, land, challenge, epic-audit, sweep, release
   .claude/settings.json hooks, permissions, worktree config
   scripts/              the guards, gates, and lock machinery
-  tests/                1063 tests that gate the harness's own mechanisms — they pass on a fresh install
-  noxfile.py            the gate sessions the agents invoke (nox -t fix / -s tests / -s lock_currency / -s shellcheck)
+  tests/harness/        988 tests that gate the harness's own mechanisms — they pass on a fresh install;
+                        tests/ itself is yours (nox -s tests ignores tests/harness/)
+  noxfile.py            the gate sessions the agents invoke (nox -t fix / -s tests / -s harness_tests / -s lock_currency / -s shellcheck)
   pyproject.toml        placeholder uv project: no runtime deps, a dev group with the gate tools — rename and fill in
                         (no uv.lock ships: the installer resolves one on your machine, and you commit it)
   docs/conventions.md   your project's style fiats (starts nearly empty — fill it in)
 install.sh              copies template/ into a target repo, with a dry-run mode
+dev-tests/              tests of the harness's own internals (suite DRY-ness, cross-file drift, the
+                        doctor, unwired tooling) — run here while developing the harness, never shipped
 ```
 
 ## Prerequisites
@@ -83,7 +88,7 @@ install.sh              copies template/ into a target repo, with a dry-run mode
 ./install.sh /path/to/your/project
 cd /path/to/your/project
 ./scripts/harness-doctor.sh
-uv run --frozen pytest tests -q   # 1063 passed
+uv run --frozen nox -s harness_tests   # 988 passed
 ```
 
 `install.sh` also runs `bd init` for you, non-interactively and with the harness's opinions

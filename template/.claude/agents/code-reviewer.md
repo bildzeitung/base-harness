@@ -246,7 +246,8 @@ Never gate a tree I then keep editing.
 
 ```bash
 uv run --frozen nox -t fix        # format + lint
-uv run --frozen nox -s tests      # pytest
+uv run --frozen nox -s tests      # pytest -- the project's suite
+scripts/harness-tests-gate.sh --base-ref origin/main   # the harness's own suite, only if the branch touched scripts/, .claude/, tests/harness/ or the build files
 scripts/validate-mermaid.sh     # only if a docs/ diagram changed
 ```
 

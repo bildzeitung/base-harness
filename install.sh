@@ -240,7 +240,7 @@ fi
 # installs it -- so there is no interpreter to probe for and no venv to
 # hand-build. The harness ships no lock: a resolution belongs to the project,
 # so a target without one gets a plain `uv sync`, which writes uv.lock for
-# the project to commit, and tests/ is runnable the moment this returns. A
+# the project to commit, and tests/harness/ is runnable the moment this returns. A
 # target that already has a lock gets `uv sync --locked`, which never moves
 # it. Skipped, not failed, when uv is not on PATH: nothing here can fix that,
 # and every file is already in place for a hand run later.
@@ -436,7 +436,7 @@ else
   echo "  2. Publish the tracker:        ./scripts/bd-dolt-push.sh   (needs a git origin with a branch)"
 fi
 cat <<'NEXT'
-  3. Check the install:          ./scripts/harness-doctor.sh && uv run --frozen pytest tests -q
+  3. Check the install:          ./scripts/harness-doctor.sh && uv run --frozen nox -s harness_tests
   4. Fill in the placeholders:   CLAUDE.md, pyproject.toml, docs/conventions.md, docs/design.md
   5. File your first ticket, then run /code
 
