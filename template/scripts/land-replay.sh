@@ -126,9 +126,9 @@ GATE_CMD="${LAND_GATE_CMD:-}"
 run_gate() {
   if [ -n "$GATE_CMD" ]; then "$GATE_CMD" "$1"; return $?; fi
   case "$1" in
-    fix)   "$TOP/venv/bin/nox" -t fix ;;
-    tests) "$TOP/venv/bin/nox" -s tests ;;
-    lock)  "$TOP/venv/bin/nox" -s lock_currency ;;
+    fix)   uv run --frozen --directory "$TOP" nox -t fix ;;
+    tests) uv run --frozen --directory "$TOP" nox -s tests ;;
+    lock)  uv run --frozen --directory "$TOP" nox -s lock_currency ;;
     *)     return 2 ;;
   esac
 }
@@ -200,6 +200,9 @@ remaining_count() {
   printf '%s' "$n"
 }
 
+# Word-split on purpose, not `while read`: the body runs the gates, which must
+# own stdin, and ids are single whitespace-free tokens.
+# shellcheck disable=SC2013
 for id in $(cat "$ACCEPTED"); do
   [ -n "$id" ] || continue
   is_done "$id" && continue

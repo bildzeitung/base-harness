@@ -5,8 +5,8 @@
 # it escalate_unless_content.
 # Sourced by every scripts/*.sh gate that draws this distinction -- discover
 # the current set rather than naming it here, since a named list goes stale on
-# every migration -- the same way scripts/python-init.sh already sources
-# scripts/venv-install.sh. Ask for the SOURCE LINE, not the library's name:
+# every migration -- the same way scripts/update-deps.sh already sources
+# scripts/dep-churn-lib.sh. Ask for the SOURCE LINE, not the library's name:
 # `grep -l gate-lib.sh scripts/*.sh` also returns this file plus any script
 # that merely explains why it does NOT source the library, so use
 #   grep -lE '^[^#]*\. "\$\(dirname "\$0"\)/gate-lib\.sh"' scripts/*.sh

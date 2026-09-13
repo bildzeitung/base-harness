@@ -585,7 +585,7 @@ all-bounced tick pays a full test run to re-certify content already carried, and
 could only be pre-existing breakage this pass neither caused nor could attribute.
 
 ```bash
-./venv/bin/nox -t fix && ./venv/bin/nox -s tests && ./venv/bin/nox -s lock_currency
+uv run --frozen nox -t fix && uv run --frozen nox -s tests && uv run --frozen nox -s lock_currency
 ```
 
 `lock_currency` catches a stale dependency lock here — locally, before public CI does. A branch that
@@ -825,7 +825,7 @@ never "destroy uncommitted work":
   vanish out from under whoever is standing in it. Nothing is destroyed.
 
 **One unenforced coupling keeps this sweep reclaiming anything at all: `.gitignore`.** A finished
-worktree is full of untracked build junk (`venv/`, `.nox/`, `__pycache__/`) and reads clean ONLY
+worktree is full of untracked build junk (`.venv/`, `.nox/`, `__pycache__/`) and reads clean ONLY
 because those are ignored. Un-ignore one and every worktree reads dirty and the sweep silently
 reclaims *nothing*. Re-check this whenever you touch `.gitignore`.
 

@@ -4,8 +4,8 @@
 # A finished worktree is full of untracked build junk, so it reads clean ONLY because
 # these are ignored. Un-ignore one and every worktree reads dirty, the sweep reclaims
 # nothing, and worktrees accumulate without bound with no alarm.
-venv/
 .venv/
+venv/
 .nox/
 __pycache__/
 *.py[cod]

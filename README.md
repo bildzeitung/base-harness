@@ -59,9 +59,9 @@ template/               the files that get copied into your project
   .claude/settings.json hooks, permissions, worktree config
   scripts/              the guards, gates, and lock machinery
   tests/                1063 tests that gate the harness's own mechanisms — they pass on a fresh install
-  noxfile.py            the gate sessions the agents invoke (nox -t fix / -s tests / -s lock_currency)
-  pyproject.toml        placeholder: no runtime deps, a dev extra with the gate tools — rename and fill in
-  requirements.lock     placeholder lock matching it — regenerate via scripts/compile-lock.sh
+  noxfile.py            the gate sessions the agents invoke (nox -t fix / -s tests / -s lock_currency / -s shellcheck)
+  pyproject.toml        placeholder uv project: no runtime deps, a dev group with the gate tools — rename and fill in
+                        (no uv.lock ships: the installer resolves one on your machine, and you commit it)
   docs/conventions.md   your project's style fiats (starts nearly empty — fill it in)
 install.sh              copies template/ into a target repo, with a dry-run mode
 ```
@@ -72,7 +72,8 @@ install.sh              copies template/ into a target repo, with a dry-run mode
 - **[beads](https://github.com/gastownhall/beads)** (`bd`) — the issue tracker the whole loop is
   built on, backed by a local Dolt database and synced over `refs/dolt/data` on your git remote
 - **jq** — required, not optional; the `PreToolUse` guards deny every `Bash` call without it
-- **Python 3.11+** — the quality gates assume a `./venv` and `nox`
+- **[uv](https://docs.astral.sh/uv/)** — owns the Python interpreter, `./.venv`, and `uv.lock`; the
+  quality gates run as `uv run --frozen nox ...`
 - **Docker** — only if you want the Mermaid diagram validation gate
 
 ## Quick start
@@ -82,13 +83,13 @@ install.sh              copies template/ into a target repo, with a dry-run mode
 ./install.sh /path/to/your/project
 cd /path/to/your/project
 ./scripts/harness-doctor.sh
-./venv/bin/pytest tests -q        # 1063 passed
+uv run --frozen pytest tests -q   # 1063 passed
 ```
 
 `install.sh` also runs `bd init` for you, non-interactively and with the harness's opinions
-(`--skip-agents`, `import.auto: false`) baked in, then builds `./venv` through
-`scripts/python-init.sh` (pinning the newest pyenv-installed CPython in `.python-version` first,
-when pyenv is present), creates a private GitHub `origin` via `gh` when the repo has none, and
+(`--skip-agents`, `import.auto: false`) baked in, then builds `./.venv` with `uv sync` (uv finds or
+downloads a Python that satisfies `requires-python`, and writes the `uv.lock` you commit), creates a private GitHub `origin` via `gh`
+when the repo has none, and
 publishes the tracker over it. Then read
 [`docs/getting-started.md`](docs/getting-started.md), which walks through the parts it does not do:
 `bd dolt push`, the first ticket, and the first `/code` run.

@@ -10,7 +10,7 @@ prerequisites and filling in your own project's `CLAUDE.md`.
 | **git** | worktrees are the isolation mechanism | `git --version` |
 | **[beads](https://github.com/gastownhall/beads)** (`bd`) | the issue tracker the whole loop runs on | `bd version` |
 | **jq** | **required, not optional** — the `PreToolUse` guards deny *every* `Bash` call without it | `jq --version` |
-| **python3** (3.11+) | the quality gates | `python3 --version` |
+| **[uv](https://docs.astral.sh/uv/)** | owns the Python interpreter, `./.venv`, and `uv.lock`; the quality gates run through it | `uv --version` |
 | **docker** | only for Mermaid diagram validation | `docker ps` |
 
 > **jq is not a soft dependency.** The guard hooks are written to **deny** rather than fall through
@@ -26,7 +26,7 @@ prerequisites and filling in your own project's `CLAUDE.md`.
 
 The target does not need to be a git repository yet: the installer runs `git init -b main` if it
 isn't one. `install.sh` never overwrites an existing file unless you pass `--force`. After copying
-it runs `bd init` for you, non-interactively (see step 2), then builds `./venv` (see step 3). If
+it runs `bd init` for you, non-interactively (see step 2), then builds `./.venv` (see step 3). If
 the repo has no git remote and `gh` is logged in, it also creates a **private** GitHub repository
 named after the target directory (no wiki, no issues — the tracker is beads) and adds it as `origin`;
 pass `--skip-remote` to opt out, and any existing remote is left alone. With an `origin` in place it
@@ -80,27 +80,38 @@ git push -u origin main          # only if the remote is empty
 
 ## 3. The Python environment (done by `install.sh`)
 
-The installer runs `./scripts/python-init.sh` for you, which creates `./venv` at the repo root and
-installs `requirements.lock` plus the `dev` extra of `pyproject.toml`. Both files ship as
-placeholders: no runtime dependencies, and a `dev` extra holding the gate tools (`nox`, `pytest`,
-`pytest-xdist`, `ruff`, `typer`). Rename the project and add your dependencies in step 5, then
-regenerate the lock with `scripts/compile-lock.sh -o requirements.lock`. If your repo already had a
-`pyproject.toml`, the installer leaves it and the lock alone and builds the venv with `--unlocked`.
+The harness is a standard [uv](https://docs.astral.sh/uv/) project. The installer runs `uv sync`
+for you, which finds (or downloads) a Python satisfying `requires-python`, resolves `uv.lock`,
+creates `./.venv` at the repo root, and installs into it. `pyproject.toml` ships as a placeholder:
+no runtime dependencies, and a `dev` dependency group holding the gate tools (`nox`, `pytest`,
+`pytest-xdist`, `ruff`, `shellcheck-py`, `typer`). **No lock ships with the harness.** A resolution
+is your project's artifact, not the harness's, so the installer writes `uv.lock` on your machine
+and you commit it with your first commit; the `lock_currency` gate reads it from then on. If your
+repo already had a `uv.lock`, the installer runs `uv sync --locked` instead and never moves it.
+Rename the project and add your dependencies in step 5 with `uv add <pkg>`, which updates
+`pyproject.toml` and `uv.lock` together.
 
-Two things the installer does around that, both only when they apply:
+The everyday commands, all through `uv`:
 
-- **pyenv users get a `.python-version`.** Under pyenv, `python` is a shim, and with no pin and a
-  global of `system` the first `python -m venv` fails with `pyenv: python: command not found`. If
-  pyenv is on your PATH and the repo has no pin, the installer writes the newest CPython you have
-  installed. Commit the file: `scripts/compile-lock.sh` reads it too. An existing pin is never
-  touched.
-- **No python 3.11+ means the step is skipped, not failed.** The installer says so and the files
-  are all in place; install a Python (`pyenv install 3`, then re-run the installer to pin it) and
-  run `./scripts/python-init.sh` yourself.
+```bash
+uv sync                          # (re)build ./.venv from uv.lock
+uv run --frozen nox -t fix       # format + lint
+uv run --frozen nox -s tests     # the test suite
+uv add <pkg>                     # add a runtime dependency; updates pyproject.toml and uv.lock
+uv lock --upgrade-package <pkg>  # move one pin; scripts/update-deps.sh does this gated, with a diff
+```
 
-A template `noxfile.py` ships with the harness, defining the three handles the agent files invoke by
-name — the `fix` **tag** (`nox -t fix`), the `tests` **session** (`nox -s tests`), and
-`lock_currency`. Replace the bodies with your real tooling but **keep the names**. The harness treats
+Gates run `--frozen` on purpose: a plain `uv run` would silently rewrite a lock that no longer
+matches `pyproject.toml`, and that staleness is what the `lock_currency` gate exists to report.
+Optionally pin an interpreter with `uv python pin 3.12` (writes `.python-version`; uv honours it).
+
+**No uv means the step is skipped, not failed.** The installer says so and the files are all in
+place; [install uv](https://docs.astral.sh/uv/getting-started/installation/) and run `uv sync`
+yourself.
+
+A template `noxfile.py` ships with the harness, defining the handles the agent files invoke by
+name — the `fix` **tag** (`nox -t fix`), the `tests` **session** (`nox -s tests`), `lock_currency`,
+and `shellcheck` (lints every tracked `.sh` file through the venv's `shellcheck-py`). Replace the bodies with your real tooling but **keep the names**. The harness treats
 them as opaque gate commands behind a 0/1/2 exit contract; see
 [customizing.md](customizing.md#quality-gates).
 
@@ -113,7 +124,7 @@ them as opaque gate commands behind a 0/1/2 exit contract; see
 Then run the harness's own gate tests — they ship green and need no project code:
 
 ```bash
-./venv/bin/pytest tests -q        # 1063 passed
+uv run --frozen pytest tests -q   # 1063 passed
 ```
 
 `harness-doctor.sh` checks prerequisites, guard scripts, agents and skills, hook wiring, the
@@ -130,9 +141,9 @@ Four files ship as templates with `<angle bracket>` placeholders:
 - **`docs/conventions.md`** — delete the two example fiats and write your own. Keep the litmus in
   the preamble: if a rule earns a *why*, it belongs in a design doc, not here.
 - **`docs/design.md`** — create it. `CLAUDE.md` points agents there first.
-- **`pyproject.toml`** — the project name, your runtime dependencies, and your package in place of
-  the empty `packages` list. Keep the `dev` extra's tools; then regenerate `requirements.lock`
-  (step 3).
+- **`pyproject.toml`** — the project name, your runtime dependencies (`uv add`), and a
+  `[build-system]` once you have a package of your own to install. Keep the `dev` group's tools;
+  `uv add` keeps `uv.lock` current as you go (step 3).
 
 Also create `docs/decisions.md` (open questions) and `docs/configuration.md` (tunables), even if
 they start nearly empty. The agents are instructed to route knowledge into them, and a missing file

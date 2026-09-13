@@ -1,17 +1,21 @@
 # Placeholder shipped by the agent harness -- rename the project and add your
-# runtime dependencies. Keep the `dev` extra's tools: noxfile.py's gate sessions
-# invoke them by path under ./venv/bin, and scripts/check_links.py and friends
-# import typer.
+# runtime dependencies (`uv add <pkg>`). Keep the `dev` dependency group's
+# tools: noxfile.py's gate sessions run them out of the environment `uv run`
+# selects (shellcheck-py is how `nox -s shellcheck` finds shellcheck), and
+# scripts/check_links.py and friends import typer.
 #
-# scripts/python-init.sh installs `.[dev]` EDITABLE on top of requirements.lock,
-# so this file must stay editable-installable. The empty `packages` list is
-# what lets it install before any source package exists; replace it with yours.
-# After any dependency change, regenerate the lock:
-#   ./venv/bin/uv --version >/dev/null && scripts/compile-lock.sh -o requirements.lock
-
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+# This is a uv project: `uv.lock` is the only place exact versions live, and
+# `uv sync` / `uv run` build ./.venv from it. The harness ships no lock -- the
+# installer's `uv sync` resolves one on your machine, and it is yours to
+# commit with your first commit. Move the lock deliberately --
+# `uv add`, `uv lock --upgrade-package NAME`, or scripts/update-deps.sh -- and
+# commit it; the `lock_currency` gate (`uv lock --check`) fails on a lock that
+# no longer matches this file.
+#
+# No [build-system] yet, so uv treats this as a virtual project and installs
+# only the dependencies. When you add a package of your own, declare a build
+# backend (e.g. `[build-system] requires = ["uv_build"] build-backend =
+# "uv_build"`) and uv will install it editable on every sync.
 
 [project]
 name = "harness-project"   # <rename>
@@ -19,17 +23,15 @@ version = "0.0.0"
 requires-python = ">=3.11"
 dependencies = []
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
   "nox",
   "pytest",
   "pytest-xdist",
   "ruff",
+  "shellcheck-py",
   "typer",
 ]
-
-[tool.setuptools]
-packages = []
 
 # Pinned so `nox -t fix` behaves the same on every machine: ruff otherwise
 # takes its line length from whichever config it finds walking up from the

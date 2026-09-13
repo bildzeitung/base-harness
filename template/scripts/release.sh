@@ -7,9 +7,8 @@
 # Guards that we're on main with a clean working tree, that local main is
 # up to date with origin/main, that X.Y.Z is well-formed SemVer strictly
 # greater than the latest existing tag, that vX.Y.Z doesn't already exist
-# (locally or on origin), and that the full test suite (nox -s tests) plus
-# the packaging assertion are green; then creates
-# an annotated tag on HEAD and pushes it to origin.
+# (locally or on origin), and that the full test suite (nox -s tests) is
+# green; then creates an annotated tag on HEAD and pushes it to origin.
 # An optional notes-file becomes the tag BODY — the release notes that
 # .github/workflows/release.yml publishes; the subject stays "harness vX.Y.Z"
 # either way. Stops there — the workflow owns the actual
@@ -89,13 +88,11 @@ else
   exit 1
 fi
 
-if [ ! -f ./venv/bin/activate ]; then
-  echo "release.sh: ./venv not found — run scripts/python-init.sh first" >&2
+if ! command -v uv >/dev/null 2>&1; then
+  echo "release.sh: 'uv' not found on PATH — install uv first" >&2
   exit 1
 fi
-. ./venv/bin/activate
-nox -s tests
-nox -s build
+uv run --frozen nox -s tests
 
 if [ -n "$NOTES_FILE" ]; then
   # --cleanup=whitespace: the default 'strip' deletes '#'-prefixed lines,

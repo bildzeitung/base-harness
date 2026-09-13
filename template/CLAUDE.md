@@ -53,21 +53,24 @@ on-demand full-text index that prints `path:line_lo-line_hi` pointers rather tha
 
 ## Python environment
 
+This is a [uv](https://docs.astral.sh/uv/) project. `uv` owns the interpreter, the venv, and the lock:
+
 ```bash
-./scripts/python-init.sh
-. ./venv/bin/activate
+uv sync                          # build ./.venv from uv.lock (uv run does this on demand too)
+uv run --frozen nox -t fix       # format + lint
+uv run --frozen nox -s tests     # the test suite
+uv add <pkg>                     # add a runtime dependency (updates pyproject.toml AND uv.lock)
+scripts/update-deps.sh           # move the lock past what pyproject.toml forces, gated
 ```
 
-- The venv lives at **`./venv`** (repo root), not in module subdirs.
-- Run **`nox -t fix`** and **`nox -s tests`** before merging any Python change; run tests via nox,
-  not a hand-rolled venv.
-- `pyproject.toml` is the INTENT layer (ranges/floors); `requirements.lock` is the ONLY place exact
-  runtime versions live. `scripts/python-init.sh` installs from the lock by default, with
-  `--unlocked` as the escape hatch to resolve fresh from `pyproject.toml`.
-
-**Agents call the venv's tools by explicit path** (`./venv/bin/nox`), never `. ./venv/bin/activate`
-and never a bare `nox` — the isolation guard refuses a sourced command, and `nox` isn't on `PATH`
-unactivated. The activation form above is for a human at a terminal.
+- The venv lives at **`./.venv`** (repo root), not in module subdirs. Never activate it and never
+  call a bare `nox`/`pytest`/`ruff`: every tool runs through `uv run`.
+- Run **`nox -t fix`** and **`nox -s tests`** (through `uv run --frozen`) before merging any Python
+  change; run tests via nox, not a hand-rolled venv.
+- `pyproject.toml` is the INTENT layer (ranges/floors); `uv.lock` is the ONLY place exact versions
+  live, and it is committed. **Gates run `--frozen`** so they honour the committed lock rather than
+  silently rewriting it — a lock that no longer matches `pyproject.toml` is `nox -s lock_currency`'s
+  verdict (exit 1), never a side effect of running a gate.
 
 ## Coding conventions
 

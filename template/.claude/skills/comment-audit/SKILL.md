@@ -72,7 +72,7 @@ say so and stop — do not dispatch the groomer over nothing.
 Dispatch `subagent_type: "comment-groomer"`, passing exactly the surviving findings block (not the
 auditor's original output) and the same target it was scoped against. Its own non-negotiables —
 comment-lines-only diff, the fiat's untouchable exemptions, re-verifying each finding itself
-before applying, re-gating with `./venv/bin/nox -t fix` + `./venv/bin/nox -s tests`, committing as
+before applying, re-gating with `uv run --frozen nox -t fix` + `uv run --frozen nox -s tests`, committing as
 its own commit — are unchanged by being dispatched through me; I add nothing to its contract.
 
 **The checkout and the push are the groomer's own contract** (`comment-groomer.md`) — it writes no

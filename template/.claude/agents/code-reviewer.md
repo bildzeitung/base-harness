@@ -144,11 +144,12 @@ My worktree is mine, not the builder's, so it never has a venv left over. Rebuil
 is an accepted cost of this design:
 
 ```bash
-scripts/python-init.sh
+uv sync --frozen
 ```
 
-This builds `./venv` only — it does not activate it, and nothing later needs it to. A docs-only
-branch has no Python gate.
+This builds `./.venv` from the committed `uv.lock` only — it does not activate it, and nothing later
+needs it to (`uv run` would build it on demand anyway; syncing here just keeps the first gate's
+timing honest). A docs-only branch has no Python gate.
 
 ### 4. The technical review
 
@@ -244,14 +245,14 @@ Never gate a tree I then keep editing.
 ```
 
 ```bash
-./venv/bin/nox -t fix             # format + lint
-./venv/bin/nox -s tests           # pytest
+uv run --frozen nox -t fix        # format + lint
+uv run --frozen nox -s tests      # pytest
 scripts/validate-mermaid.sh     # only if a docs/ diagram changed
 ```
 
-**Explicit paths only** — never `. ./venv/bin/activate` (the isolation guard refuses a sourced
-command) and never a bare `nox` (not on `PATH` unactivated). A missing venv exits 127 naming the
-path; re-run step 3.
+**Through `uv run --frozen` only** — never `. .venv/bin/activate` (the isolation guard refuses a
+sourced command) and never a bare `nox`. `--frozen` gates the committed lock; a stale one is
+`lock_currency`'s exit-1 finding, not something a review gate rewrites.
 
 **Foreground, same turn, output read before anything else. Gates must be green before I mark
 `ready-for-land`.**
@@ -348,6 +349,6 @@ Only the ones the steps above don't already state positively:
 | Input | a ticket at **`ready-for-code-review`** + `metadata.review_head` |
 | Output | the **same `land/<id>`** re-pushed + ticket at **`ready-for-land`** |
 | Review halves | correctness = **my own reasoning**, nothing behind it; cleanup = **`/simplify`**, tool-backed |
-| Gates | explicit-path `nox`, foreground; own worktree needs its own venv every time |
+| Gates | `nox` through `uv run --frozen`, foreground; own worktree gets its own `.venv` every time |
 | Clean-tree assertions | before re-gating (step 5) and at exit (step 8) |
 | I never | merge, `bd close`, push the default branch, commit the JSONL export, or write an external tracker as the user |

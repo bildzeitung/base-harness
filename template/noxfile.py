@@ -1,5 +1,12 @@
 """Nox sessions the agent harness invokes as its quality gates.
 
+Invoked through uv, never bare: `uv run --frozen nox -t fix`. `uv run` builds
+./.venv from uv.lock if it is missing or stale and puts that environment's
+interpreter first, so nox and the tools below need no activation. `--frozen`
+makes a gate honour the COMMITTED lock rather than silently rewriting it when
+pyproject.toml changed -- that drift is `lock_currency`'s verdict to give, not
+a side effect for a gate to paper over.
+
 The harness treats these as opaque commands behind a 0/1/2 exit contract
 (0 = passed, 1 = found a real problem, 2 = COULD NOT RUN). A session that lets
 nox report a failed command exits 1, which is correct for `fix` and `tests`: a
@@ -10,21 +17,21 @@ which nox passes through unchanged -- `lock_currency` below is the worked
 example, and scripts/validate-mermaid.sh the shell-side reference.
 
 Replace the bodies with your project's real tooling; keep the NAMES and the `fix`
-tag, since the agent files invoke `nox -t fix`, `nox -s tests`, and
-`nox -s lock_currency` by those exact handles.
+tag, since the agent files invoke `nox -t fix`, `nox -s tests`,
+`nox -s lock_currency` and `nox -s shellcheck` by those exact handles.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import nox
 
-nox.options.default_venv_backend = "none"  # the harness owns ./venv
+nox.options.default_venv_backend = "none"  # uv owns ./.venv
 
 #: Test-worker count. scripts/code-concurrency-cap.sh greps THIS FILE for the
 #: literal below to size its per-agent memory budget, so keep the shape
@@ -33,13 +40,13 @@ TEST_WORKERS = os.environ.get("HARNESS_TEST_WORKERS") or "8"
 
 
 def _venv_tool(name: str) -> str:
-    """Resolve a tool under ./venv/bin without requiring activation.
+    """Resolve a tool from the environment this nox is running in.
 
-    Load-bearing: the isolation guard refuses any sourced command, so agents call
-    `./venv/bin/nox` directly and never activate. Resolving tools here is what
-    makes that work.
+    `uv run` hands nox the project venv's interpreter, so the tool lives beside
+    ``sys.executable``. Resolving there (rather than a bare name on PATH) keeps
+    the gate pinned to uv.lock's versions however nox itself was launched.
     """
-    return os.path.join(".", "venv", "bin", name)
+    return str(Path(sys.executable).parent / name)
 
 
 @nox.session(tags=["fix"])
@@ -76,65 +83,67 @@ def tests(session: nox.Session) -> None:
     )
 
 
-def _lock_pins(path: Path) -> list[str]:
-    """The pin lines of a lock file: uv writes its own invocation into the
-    header, so comparing bytes would never match two compiles."""
-    return [
-        line
-        for line in path.read_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
+@nox.session
+def shellcheck(session: nox.Session) -> None:
+    """Lint every tracked shell script (and the sourceable libraries).
+
+    The set is discovered from git, never listed here: the harness's guards
+    and gates are shell, and a script that fell outside a hand-kept roster
+    would be exactly the one nobody linted. `-x` follows the `. "$(dirname
+    "$0")/lib.sh"` sources the scripts use; the `shellcheck source=` comments
+    in each file tell it where to look.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "*.sh"], capture_output=True, check=True
+    ).stdout.decode()
+    files = [f for f in tracked.split("\0") if f]
+    if not files:
+        session.log("shellcheck: no tracked .sh files")
+        return
+    session.run(
+        _venv_tool("shellcheck"),
+        "-x",
+        "--source-path=SCRIPTDIR",
+        *files,
+        external=True,
+    )
 
 
 @nox.session
 def lock_currency(session: nox.Session) -> None:
-    """Fail if requirements.lock is stale against pyproject.toml.
+    """Fail if uv.lock is stale against pyproject.toml.
 
-    Recompiles through scripts/compile-lock.sh (the single copy of the
-    command) into a scratch file SEEDED from the committed lock -- uv keeps an
-    existing output file's pins wherever they still satisfy pyproject.toml, so
-    only a changed intent moves the result; an upstream release alone does not
-    (that is scripts/update-deps.sh's job, on purpose). Exit 1 = stale, a real
-    finding. Exit 2 = could not answer: no ./venv/bin/uv, no .python-version,
-    a failed compile. Raised with sys.exit so it reaches the caller intact.
+    `uv lock --check` re-resolves without writing: it keeps every committed pin
+    that still satisfies pyproject.toml, so only a changed intent moves the
+    result; an upstream release alone does not (that is scripts/update-deps.sh's
+    job, on purpose). Exit 1 = stale, a real finding. Exit 2 = could not
+    answer: no `uv` on PATH, no uv.lock, or a resolve that failed for some
+    other reason (network, an unsatisfiable range). Raised with sys.exit so it
+    reaches the caller intact.
 
     /land runs this LAST in its re-gate `&&` chain: an `&&` chain reports its
     last-run command's status, so anything after it would mask an exit 2.
     """
-    uv = Path(_venv_tool("uv")).resolve()
-    if not uv.exists():
-        session.log("lock_currency: %s is missing -- run scripts/python-init.sh", uv)
+    uv = shutil.which("uv")
+    if uv is None:
+        session.log("lock_currency: 'uv' is not on PATH -- install uv and re-run")
         sys.exit(2)
-    lock = Path("requirements.lock")
-    if not lock.exists():
+    if not Path("uv.lock").exists():
+        session.log("lock_currency: uv.lock is missing -- run `uv lock` and commit it")
+        sys.exit(2)
+    proc = subprocess.run(
+        [uv, "lock", "--check"], capture_output=True, text=True, check=False
+    )
+    if proc.returncode == 0:
+        return
+    if "needs to be updated" in proc.stderr:
         session.error(
-            "lock_currency: requirements.lock is missing -- scripts/compile-lock.sh -o requirements.lock"
+            "uv.lock is stale against pyproject.toml -- regenerate: uv lock "
+            "(then commit the result)"
         )
-    with tempfile.TemporaryDirectory() as tmp:
-        candidate = Path(tmp) / "requirements.lock"
-        candidate.write_text(lock.read_text())
-        # compile-lock.sh finds uv on PATH; the venv's is the one that matches
-        # the lock, so it goes first.
-        env = {
-            **os.environ,
-            "PATH": os.pathsep.join([str(uv.parent), os.environ.get("PATH", "")]),
-        }
-        proc = subprocess.run(
-            ["bash", "scripts/compile-lock.sh", "-q", "-o", str(candidate)],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            session.log(
-                "lock_currency: compile-lock.sh failed (exit %d):\n%s",
-                proc.returncode,
-                proc.stderr.strip(),
-            )
-            sys.exit(2)
-        if _lock_pins(candidate) != _lock_pins(lock):
-            session.error(
-                "requirements.lock is stale against pyproject.toml -- "
-                "regenerate: scripts/compile-lock.sh -o requirements.lock"
-            )
+    session.log(
+        "lock_currency: `uv lock --check` failed (exit %d):\n%s",
+        proc.returncode,
+        proc.stderr.strip(),
+    )
+    sys.exit(2)

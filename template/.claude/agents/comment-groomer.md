@@ -99,7 +99,7 @@ target needs with the head SHA I report. My own report always includes that head
    (restore what's referenced). A comment sweep has introduced such references before, and on the
    bare-dispatch path nothing runs downstream of my push — so this is mine to catch before I
    commit, on both the findings-block and bare paths.
-5. Gate: `./venv/bin/nox -t fix` and `./venv/bin/nox -s tests` (a deleted comment can still break
+5. Gate: `uv run --frozen nox -t fix` and `uv run --frozen nox -s tests` (a deleted comment can still break
    a gate — e.g. a stripped lint directive can turn a corpus-scan test red).
 6. Commit comment changes as their **own commit** ("comments: <summary> (audit)"), never mixed
    into a feature commit. Push per above if my dispatch named a branch to push to. Report applied /

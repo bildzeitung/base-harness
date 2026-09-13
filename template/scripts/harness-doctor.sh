@@ -36,7 +36,7 @@ warn() { printf '  \033[33mwarn\033[0m  %s\n' "$1"; warns=$((warns + 1)); }
 echo "harness-doctor: $ROOT"
 echo
 echo "prerequisites"
-for tool in git jq bd python3; do
+for tool in git jq bd uv; do
   if command -v "$tool" >/dev/null 2>&1; then
     ok "$tool on PATH"
   else
@@ -81,7 +81,6 @@ scripts/epic-debate-gate.sh
 scripts/sweep-digest-id.sh
 scripts/code-concurrency-cap.sh
 scripts/bd-dolt-push.sh
-scripts/python-init.sh
 scripts/validate-mermaid.sh
 scripts/check-decisions-no-silent-rewrite.sh
 scripts/gh-write-guard.sh
@@ -193,7 +192,7 @@ echo
 echo "gate tests"
 set -- tests/test_*.py
 if [ -e "$1" ]; then
-  ok "tests/ present ($# gate test modules) -- run: ./venv/bin/pytest tests -q"
+  ok "tests/ present ($# gate test modules) -- run: uv run --frozen pytest tests -q"
 else
   # Not a hard failure: a project may deliberately drop them. But say so loudly,
   # because without them every mechanism below is prose-enforced only.
@@ -211,10 +210,10 @@ else
 fi
 # The GC sweep reads clean ONLY because build junk is ignored. Un-ignore one and
 # every worktree reads dirty and nothing is ever reclaimed.
-if [ -f .gitignore ] && grep -qE '(^|/)venv/?$|(^|/)\.nox/?$' .gitignore; then
-  ok ".gitignore covers venv/.nox (worktree GC can read a finished tree as clean)"
+if [ -f .gitignore ] && grep -qE '(^|/)\.venv/?$|(^|/)\.nox/?$' .gitignore; then
+  ok ".gitignore covers .venv/.nox (worktree GC can read a finished tree as clean)"
 else
-  warn ".gitignore may not ignore venv/ and .nox/ -- worktree GC will read every worktree as dirty"
+  warn ".gitignore may not ignore .venv/ and .nox/ -- worktree GC will read every worktree as dirty"
 fi
 
 echo

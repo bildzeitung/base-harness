@@ -4,7 +4,7 @@ These are the tests that keep the harness's own mechanisms honest. They are **no
 tests — they have zero dependency on any project code, so they run in a fresh repo unchanged.
 
 ```bash
-./venv/bin/pytest tests -q
+uv run --frozen pytest tests -q
 ```
 
 ## What they gate

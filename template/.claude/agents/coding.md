@@ -290,16 +290,15 @@ git worktree unlock "$(git rev-parse --show-toplevel)"
 **Foreground, same turn, output read before anything else.**
 
 ```bash
-scripts/python-init.sh          # first time / if no venv (builds ./venv)
-./venv/bin/nox -t fix             # format + lint (fixes in place)
-./venv/bin/nox -s tests           # pytest
+uv run --frozen nox -t fix        # format + lint (fixes in place)
+uv run --frozen nox -s tests      # pytest
 ```
 
-**Call the venv's tools by explicit path — never `. ./venv/bin/activate`, never a bare `nox`.** The
-isolation guard refuses any sourced command (and hand-rolled `VIRTUAL_ENV=`/`PATH=` too), and `nox`
-isn't on `PATH` unactivated. A missing venv fails loudly on its own: `./venv/bin/nox` exits 127
-naming the path — re-run `python-init.sh` and re-gate. **This overrides CLAUDE.md's
-Python-environment section**, which shows the activation form for a human at a terminal.
+**Every tool runs through `uv run --frozen` — never `. .venv/bin/activate`, never a bare `nox`.**
+`uv run` builds `./.venv` from `uv.lock` on first use (a fresh worktree has none), so there is no
+separate setup step; `--frozen` makes the gate honour the committed lock instead of rewriting it
+when `pyproject.toml` changed — that drift is `lock_currency`'s verdict, not mine to paper over.
+The isolation guard refuses any sourced command (and hand-rolled `VIRTUAL_ENV=`/`PATH=` too).
 
 A gate that fails after step 6's commit leaves my fix uncommitted — expected, so long as I close the
 loop: **gate → (red? fix, re-gate) → green → commit everything the loop produced → clean.** That
@@ -473,9 +472,8 @@ my push in step 5 is an ordinary, non-force push.
 Same gates, same FOREGROUND-only rule:
 
 ```bash
-scripts/python-init.sh          # a fresh worktree always needs its own venv
-./venv/bin/nox -t fix
-./venv/bin/nox -s tests
+uv run --frozen nox -t fix      # uv builds this worktree's ./.venv on first use
+uv run --frozen nox -s tests
 scripts/validate-mermaid.sh     # only if a docs/ diagram is in the branch
 ```
 
@@ -566,7 +564,7 @@ Only the ones the steps above don't already state positively:
 | Hand-off metadata | `review_head` only |
 | SHA write guard | `scripts/validate-sha40.sh <field> "$HEAD_SHA" \|\| exit $?` before every `review_head`/`land_head` write |
 | I never | review my own work, merge, `bd close`, push the default branch, commit the JSONL export, or write an external tracker as the user |
-| Gates | `./venv/bin/nox -t fix`, `./venv/bin/nox -s tests`, `scripts/validate-mermaid.sh` — explicit paths, foreground |
+| Gates | `uv run --frozen nox -t fix`, `uv run --frozen nox -s tests`, `scripts/validate-mermaid.sh` — through uv, foreground |
 | Clean-tree assertion | `git status --short` empty before gating, before hand-off, before a pickup push |
 | Design source of truth | `docs/` (settled), `docs/decisions.md` (open), `docs/configuration.md` (tunables) |
 | Task tracker | **bd only** |

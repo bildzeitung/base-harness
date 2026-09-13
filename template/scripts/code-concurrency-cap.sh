@@ -19,7 +19,7 @@
 #                       else, if HARNESS_TEST_WORKERS is genuinely UNSET,
 #                       noxfile.py's own _xdist_workers default (read from
 #                       its SOURCE TEXT below -- never `import noxfile`,
-#                       which requires the venv active and fails silently to
+#                       which needs the project venv and fails silently to
 #                       empty otherwise);
 #                       else (HARNESS_TEST_WORKERS is set but not a clean
 #                       positive integer -- "auto", xdist's "logical", a
@@ -64,9 +64,9 @@ MEMINFO="${HARNESS_CAP_MEMINFO:-/proc/meminfo}"
 NPROC_N="${HARNESS_CAP_NPROC:-$(nproc 2>/dev/null || echo 4)}"
 
 # noxfile.py's _xdist_workers default, read from its SOURCE TEXT -- no
-# `import noxfile` (nox is only importable with the venv active; a silent
+# `import noxfile` (nox is only importable from the project venv; a silent
 # ModuleNotFoundError there would yield an empty extraction and undershoot on
-# any machine that didn't happen to source the venv first, a new bug class).
+# any machine where ./.venv had not been synced yet, a new bug class).
 # A parse miss (the literal moved, or its surrounding line was refactored)
 # yields empty here and falls through the case below to nproc: fail-tight,
 # same as every other unparseable-width case.

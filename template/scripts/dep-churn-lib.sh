@@ -3,8 +3,8 @@
 # Sourceable helpers for scripts/update-deps.sh's VERSION DIFF and the filing
 # decision for its churn-evaluation stub ticket. Extracted so the
 # parsing, the rendering and the noise gate are covered by `nox -s shellcheck`
-# and tests/test_dep_churn_lib.py -- the same shape scripts/venv-install.sh,
-# scripts/gate-lib.sh and scripts/shell-quote-split.sh already use.
+# and tests/test_dep_churn_lib.py -- the same shape scripts/gate-lib.sh and
+# scripts/shell-quote-split.sh already use.
 #
 # CONTRACT: every function here returns its data on STDOUT and holds no
 # cross-call state. Callers assign the result themselves. That is deliberate
@@ -14,11 +14,21 @@
 #
 # No side effects, no top-level statements: safe to source from anywhere.
 
-# name<TAB>version for every pin in the lock file $1, on stdout. Deliberately
-# ignores the --hash lines; those are the whole reason this isn't `git diff`.
+# name<TAB>version for every [[package]] in the uv.lock at $1, on stdout.
+# Reads only each package table's own `name`/`version` header keys -- the
+# nested [package.*] tables (sdist/wheel hashes, dependency lists, markers)
+# are what make `git diff -- uv.lock` unreadable, and the whole reason this
+# helper exists. Awk, not tomllib: this runs before any Python environment
+# is guaranteed to exist.
 _dep_pins() {
-  grep -oE '^[A-Za-z0-9_.+-]+==[A-Za-z0-9_.!+-]+' "$1" \
-    | sed -E 's/==/\t/' | sort -t $'\t' -k1,1 -u
+  awk '
+    /^\[\[package\]\]$/ { inpkg = 1; name = ""; next }
+    /^\[/ { inpkg = 0 }
+    inpkg && /^name = "/ { name = $3; gsub(/"/, "", name) }
+    inpkg && /^version = "/ && name != "" {
+      v = $3; gsub(/"/, "", v); print name "\t" v; name = ""
+    }
+  ' "$1" | sort -t $'\t' -k1,1 -u
 }
 
 # Emit the raw, unformatted "name<TAB>old<TAB>new" change lines for the two

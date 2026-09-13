@@ -142,6 +142,7 @@ _split_unquoted() {
   len=${#s}
   while ((i < len)); do
     c="${s:i:1}"
+    # shellcheck disable=SC1003  # a literal backslash, not a mis-escaped quote
     if [[ "$state" != "single" && "$c" == '\' ]]; then
       out+="$c"
       i=$((i + 1))

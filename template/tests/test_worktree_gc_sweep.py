@@ -39,7 +39,7 @@ def _repo(tmp_path: Path) -> Path:
     _git(repo, "commit", "-q", "--allow-empty", "-m", "init")
     # The sweep only considers paths under .claude/worktrees/, and reads a tree as
     # clean only because build junk is ignored -- both are load-bearing here.
-    (repo / ".gitignore").write_text("venv/\n.nox/\n__pycache__/\n")
+    (repo / ".gitignore").write_text(".venv/\n.nox/\n__pycache__/\n")
     _git(repo, "add", ".gitignore")
     _git(repo, "commit", "-q", "-m", "ignore")
     (repo / ".claude" / "worktrees").mkdir(parents=True)

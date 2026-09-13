@@ -197,7 +197,7 @@ def test_meminfo_unreadable_is_4(tmp_path: Path) -> None:
 def test_workers_default_extraction_matches_noxfile(tmp_path: Path) -> None:
     """The `workers` default has ONE source: noxfile.py's own
     `_xdist_workers()` return literal, read from its SOURCE TEXT (never
-    imported -- `import noxfile` needs the venv active, which the script
+    imported -- `import noxfile` needs the project venv, which the script
     cannot assume). This test independently regexes that same literal out of
     the LIVE noxfile.py (ground truth, not a hardcoded "8") and confirms the
     script's unset-HARNESS_TEST_WORKERS path resolves to an *identical* cap as

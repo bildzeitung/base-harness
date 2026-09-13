@@ -6,3 +6,8 @@ __pycache__/
 .nox/
 venv/
 .venv/
+
+# The harness ships the uv workflow, not a resolution: template/uv.lock is a
+# project artifact, written by `uv sync` on the target and committed there.
+# Local gate runs inside this repo still create one; it never ships.
+template/uv.lock

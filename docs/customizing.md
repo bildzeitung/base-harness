@@ -64,15 +64,18 @@ The three invocations to substitute, all appearing in `.claude/agents/coding.md`
 `.claude/agents/code-reviewer.md`, and `.claude/skills/land/SKILL.md`:
 
 ```bash
-./venv/bin/nox -t fix             # format + lint, fixing in place
-./venv/bin/nox -s tests           # the test suite
-./venv/bin/nox -s lock_currency   # dependency-lock currency (optional; keep it LAST in /land's && chain)
+uv run --frozen nox -t fix             # format + lint, fixing in place
+uv run --frozen nox -s tests           # the test suite
+uv run --frozen nox -s lock_currency   # dependency-lock currency (optional; keep it LAST in /land's && chain)
+uv run --frozen nox -s shellcheck      # every tracked .sh file, via the venv's shellcheck-py
 ```
 
 Two rules travel with whatever you substitute:
 
-- **Explicit paths, never activation.** The isolation guard refuses a sourced command, so
-  `. ./venv/bin/activate && nox` fails where `./venv/bin/nox` works.
+- **Through `uv run --frozen`, never activation.** The isolation guard refuses a sourced command, so
+  `. .venv/bin/activate && nox` fails where `uv run --frozen nox` works. `--frozen` is load-bearing
+  too: a plain `uv run` rewrites a stale `uv.lock` before the gate starts, which would both dirty
+  the tree `/land` is certifying and make `lock_currency` vacuous.
 - **`lock_currency` stays last in `/land`'s `&&` chain.** An `&&` chain reports its last-run
   command's status, so anything after it masks an exit 2.
 
@@ -141,7 +144,7 @@ them only after reading [architecture.md](architecture.md).
   already pushed and would need a force-push. Nothing in this harness force-pushes, which is why no
   step of the loop needs a human to authorize one.
 - **The `import.auto: false` invariant.** See [getting-started.md](getting-started.md#2-initialise-the-tracker).
-- **`.gitignore`'s `venv/` and `.nox/` entries.** `/land`'s worktree GC reclaims a worktree only
+- **`.gitignore`'s `.venv/` and `.nox/` entries.** `/land`'s worktree GC reclaims a worktree only
   when it reads clean, and a finished worktree reads clean *only* because build junk is ignored.
   Un-ignore one and the sweep silently reclaims nothing, forever, with no alarm.
 - **The `land_head` exact-match vs. `review_head` ancestor-check asymmetry.** Same predicate,

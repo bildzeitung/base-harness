@@ -5,10 +5,8 @@
 # Runs `git init -b main` if the target is not already a repository, copies
 # template/ into it, never overwriting an existing file unless --force is given,
 # then initialises the beads tracker non-interactively with the harness's
-# opinions baked in (see "tracker" below). If pyenv is on PATH and the target
-# has no .python-version, it pins the newest installed CPython there (see
-# "python" below), then builds ./venv through scripts/python-init.sh when a
-# python >= 3.11 resolves there (see "venv" below). If the repo has no git
+# opinions baked in (see "tracker" below), then builds ./.venv through
+# `uv sync` when uv is on PATH (see "python" below). If the repo has no git
 # remote and `gh` is on PATH, it creates a private GitHub repository named
 # after the target directory and adds it as origin (see "remote" below). With
 # a tracker it just initialised and an origin to push to, it then publishes the
@@ -117,23 +115,10 @@ echo "install: branch      ${DEFAULT_BRANCH:-<detached or unborn>}"
 [ "$DRY_RUN" = 1 ] && echo "install: DRY RUN — nothing will be written"
 echo
 
-# pyproject.toml and requirements.lock travel as a pair: the template's lock
-# pins the template's (empty) dependency set, so copying it beside a target's
-# own pyproject.toml would hand python-init.sh a lock that contradicts the
-# intent file. Decided before the loop, because the loop itself writes
-# pyproject.toml before it reaches the lock.
-OWN_PYPROJECT=0
-[ -e "$TARGET/pyproject.toml" ] && OWN_PYPROJECT=1
-
 copied=0; skipped=0; overwritten=0
 while IFS= read -r rel; do
   src="$TEMPLATE/$rel"
   dst="$TARGET/$rel"
-  if [ "$rel" = requirements.lock ] && [ "$OWN_PYPROJECT" = 1 ] && [ "$FORCE" != 1 ]; then
-    printf '  SKIP      %s (target has its own pyproject.toml; the template lock would not match it)\n' "$rel"
-    skipped=$((skipped + 1))
-    continue
-  fi
   if [ -e "$dst" ] && [ "$FORCE" != 1 ]; then
     printf '  SKIP      %s (exists — use --force to overwrite)\n' "$rel"
     skipped=$((skipped + 1))
@@ -155,12 +140,14 @@ while IFS= read -r rel; do
   fi
 done < <(
   # Prune tool state: running the template's own gates in place leaves
-  # __pycache__/, .ruff_cache/, .pytest_cache/, .nox/ and a venv behind, and
-  # none of it is template content -- a stale .pyc or another machine's ruff
-  # cache must never be installed.
+  # __pycache__/, .ruff_cache/, .pytest_cache/, .nox/, a venv and a uv.lock
+  # behind, and none of it is template content -- a stale .pyc or another
+  # machine's ruff cache must never be installed. The lock is excluded on
+  # principle, not just hygiene: it is a project artifact, resolved on the
+  # target by `uv sync` below and committed there.
   cd "$TEMPLATE" && find . \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' \
       -o -name .ruff_cache -o -name .pytest_cache -o -name .mypy_cache -o -name .nox \
-      -o -name venv -o -name .venv \) -prune -o -type f -print \
+      -o -name venv -o -name .venv -o -name uv.lock \) -prune -o -type f -print \
     | sed 's#^\./##' | sort
 )
 
@@ -246,95 +233,49 @@ fi
 
 # ---- python --------------------------------------------------------------------
 #
-# scripts/python-init.sh opens with `python -m venv venv`. Under pyenv, `python`
-# is a shim that resolves through .python-version and then pyenv's global
-# version. A fresh machine usually has global = "system", and most systems ship
-# python3 with no `python` alias, so the shim fails the very first run with
-# "pyenv: python: command not found". Pinning the newest installed CPython here
-# makes that run work, and the same file is what scripts/compile-lock.sh reads
-# to resolve requirements.lock for the right interpreter -- so the pin is
-# load-bearing, not a convenience. An existing .python-version is a project
-# decision and is left alone, --force or not. This runs after `bd init` so its
-# commit cannot sweep the file up.
+# `uv sync` runs here rather than being left to the walkthrough: every fresh
+# install needs it and it was the step most often skipped. uv owns the whole
+# Python side -- it finds (or downloads) an interpreter satisfying
+# pyproject.toml's requires-python, creates ./.venv, resolves uv.lock and
+# installs it -- so there is no interpreter to probe for and no venv to
+# hand-build. The harness ships no lock: a resolution belongs to the project,
+# so a target without one gets a plain `uv sync`, which writes uv.lock for
+# the project to commit, and tests/ is runnable the moment this returns. A
+# target that already has a lock gets `uv sync --locked`, which never moves
+# it. Skipped, not failed, when uv is not on PATH: nothing here can fix that,
+# and every file is already in place for a hand run later.
 echo
 echo "python"
-pv="$TARGET/.python-version"
-PYVER=""
-if ! command -v pyenv >/dev/null 2>&1; then
-  echo "  SKIP      .python-version (pyenv not on PATH)"
-elif [ -e "$pv" ]; then
-  echo "  SKIP      .python-version (exists: $(head -1 "$pv"))"
-else
-  # CPython only: `pyenv versions --bare` also lists pypy-*, anaconda-* and
-  # friends, which the regex drops. sort -V puts 3.14.5 above 3.9.18; a plain
-  # sort would not.
-  PYVER="$(pyenv versions --bare 2>/dev/null | grep -E '^3\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
-  if [ -z "$PYVER" ]; then
-    echo "  SKIP      .python-version (pyenv has no CPython 3.x installed -- 'pyenv install 3' first)"
-  elif [ "$DRY_RUN" = 1 ]; then
-    echo "  would write .python-version ($PYVER)"
-  else
-    printf '%s\n' "$PYVER" >"$pv" || exit 2
-    echo "  wrote     .python-version ($PYVER) -- commit it; scripts/compile-lock.sh reads it"
-  fi
-  case "$PYVER" in
-    3.[0-9].*|3.10.*)
-      echo "  NOTE      $PYVER is older than the 3.11 the gates assume; 'pyenv install 3' and re-pin" ;;
-  esac
-fi
-
-# ---- venv ----------------------------------------------------------------------
-#
-# scripts/python-init.sh runs here rather than being left to the walkthrough:
-# every fresh install needs it and it was the step most often skipped. The
-# template ships a placeholder pyproject.toml (no runtime deps, a dev extra with
-# the gate tools) and a matching requirements.lock, so on a fresh target the
-# locked path succeeds and tests/ is runnable the moment this returns. A target
-# that brought its own pyproject.toml but no lock gets --unlocked, the only path
-# that can resolve for it. Skipped, not failed, when no python >= 3.11 resolves
-# from the target: nothing here can fix that, and every file is already in
-# place for a hand run later. The probe runs FROM the target so the pyenv shim
-# sees the .python-version written above.
-echo
-echo "venv"
 VENV_SKIPPED=0
-# A dry run has written nothing, so it predicts instead: the pin it would have
-# written goes in through PYENV_VERSION (which the shim honours over the file),
-# and the lock counts as present if the copy above would have placed it.
-py=""; pydesc=""
-for cand in python python3; do
-  if (cd "$TARGET" && env ${PYVER:+PYENV_VERSION=$PYVER} "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)') >/dev/null 2>&1; then
-    py="$cand"
-    pydesc="$(cd "$TARGET" && env ${PYVER:+PYENV_VERSION=$PYVER} "$cand" --version 2>&1)"
-    break
-  fi
-done
+LOCK_WRITTEN=0
 lock_present=0
-[ -e "$TARGET/requirements.lock" ] && lock_present=1
-[ "$DRY_RUN" = 1 ] && [ "$OWN_PYPROJECT" = 0 ] && lock_present=1
-if [ -e "$TARGET/venv" ]; then
-  echo "  SKIP      python-init.sh (venv/ exists)"
-elif [ -z "$py" ]; then
-  echo "  SKIP      python-init.sh (no python >= 3.11 resolves from the target)"
+[ -e "$TARGET/uv.lock" ] && lock_present=1
+sync_args=""
+[ "$lock_present" = 1 ] && sync_args="--locked"
+if ! command -v uv >/dev/null 2>&1; then
+  echo "  SKIP      uv sync (uv not on PATH)"
   VENV_SKIPPED=1
+elif [ -e "$TARGET/.venv" ]; then
+  echo "  SKIP      uv sync (.venv/ exists)"
+elif [ "$DRY_RUN" = 1 ]; then
+  echo "  would run uv sync${sync_args:+ $sync_args} ($(uv --version 2>/dev/null))"
 else
-  init_args=""
-  [ "$lock_present" = 1 ] || init_args="--unlocked"
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "  would run ./scripts/python-init.sh${init_args:+ $init_args} ($pydesc via $py)"
-  else
-    out="$(mktemp)" || exit 2
-    if (cd "$TARGET" && ./scripts/python-init.sh $init_args) >"$out" 2>&1; then
-      rm -f "$out"
-      echo "  ran       ./scripts/python-init.sh${init_args:+ $init_args} ($pydesc via $py)"
-      echo "  built     venv/"
-    else
-      echo "install: scripts/python-init.sh failed; last 30 lines:" >&2
-      tail -30 "$out" | sed 's/^/    /' >&2
-      rm -f "$out"
-      echo "install: files and tracker are in place. Fix the cause, then run ./scripts/python-init.sh by hand." >&2
-      exit 2
+  out="$(mktemp)" || exit 2
+  # shellcheck disable=SC2086  # $sync_args is at most one flag, deliberately unquoted
+  if (cd "$TARGET" && uv sync $sync_args) >"$out" 2>&1; then
+    rm -f "$out"
+    echo "  ran       uv sync${sync_args:+ $sync_args} ($(uv --version 2>/dev/null))"
+    echo "  built     .venv/"
+    if [ "$lock_present" = 0 ]; then
+      echo "  wrote     uv.lock"
+      LOCK_WRITTEN=1
     fi
+  else
+    echo "install: uv sync failed; last 30 lines:" >&2
+    tail -30 "$out" | sed 's/^/    /' >&2
+    rm -f "$out"
+    echo "install: files and tracker are in place. Fix the cause, then run 'uv sync' by hand." >&2
+    exit 2
   fi
 fi
 
@@ -347,7 +288,7 @@ fi
 # no issues: the tracker is beads, not GitHub Issues, and a public repo is a
 # decision to make on purpose. Any existing remote, whatever its name, means
 # the user has already decided where this repo lives. Runs last so a failure
-# here leaves the files, tracker and venv in place.
+# here leaves the files, tracker and .venv in place.
 echo
 echo "remote"
 REMOTE_CREATED=0
@@ -373,7 +314,7 @@ else
     echo "install: gh repo create failed:" >&2
     sed 's/^/    /' "$gh_out" >&2
     rm -f "$gh_out"
-    echo "install: files, tracker and venv are in place. Create the remote by hand (or fix the cause and re-run; every other step is skipped once done)." >&2
+    echo "install: files, tracker and .venv are in place. Create the remote by hand (or fix the cause and re-run; every other step is skipped once done)." >&2
     exit 2
   fi
 fi
@@ -460,7 +401,7 @@ if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "main" ]; then
   echo "         templates say 'main'. Before running anything, replace it:"
   echo
   echo "           cd $TARGET"
-  echo "           grep -rl '\\bmain\\b' .claude scripts CLAUDE.md"
+  printf '%s\n' "           grep -rl '\\bmain\\b' .claude scripts CLAUDE.md"
   echo "           # review each hit, then substitute deliberately"
   echo
   echo "         See docs/customizing.md ('Default branch name') in the harness export."
@@ -468,9 +409,15 @@ fi
 
 if [ "$VENV_SKIPPED" = 1 ]; then
   echo
-  echo "install: NOTE — no python >= 3.11 resolved, so ./venv was not built. Install one"
-  echo "         (pyenv: 'pyenv install 3', then re-run this installer to pin it) and run"
-  echo "         ./scripts/python-init.sh before step 3 below."
+  echo "install: NOTE — uv is not on PATH, so ./.venv was not built. Install uv"
+  echo "         (https://docs.astral.sh/uv/getting-started/installation/) and run"
+  echo "         'uv sync' in $TARGET before step 3 below."
+fi
+
+if [ "$LOCK_WRITTEN" = 1 ]; then
+  echo
+  echo "install: uv.lock was resolved on this machine -- it is your project's, not the"
+  echo "         harness's. Commit it with your first commit; the lock_currency gate reads it."
 fi
 
 if [ "$REMOTE_CREATED" = 1 ] && [ "$BRANCH_PUSHED" = 0 ]; then
@@ -482,14 +429,14 @@ fi
 echo
 echo "install: next steps (see docs/getting-started.md for the full walkthrough)"
 echo
-echo "  1. Install prerequisites:      jq, (docker for diagram validation)"
+echo "  1. Install prerequisites:      jq, uv, (docker for diagram validation)"
 if [ "$TRACKER_PUSHED" = 1 ]; then
   echo "  2. Publish the tracker:        done (refs/dolt/data is on origin)"
 else
   echo "  2. Publish the tracker:        ./scripts/bd-dolt-push.sh   (needs a git origin with a branch)"
 fi
 cat <<'NEXT'
-  3. Check the install:          ./scripts/harness-doctor.sh && ./venv/bin/pytest tests -q
+  3. Check the install:          ./scripts/harness-doctor.sh && uv run --frozen pytest tests -q
   4. Fill in the placeholders:   CLAUDE.md, pyproject.toml, docs/conventions.md, docs/design.md
   5. File your first ticket, then run /code
 
